@@ -662,18 +662,38 @@ class MainWindow(QMainWindow):
         self.enc_box.setCurrentIndex(max(0, self.enc_box.findData(self.s.encoder)))
         self.enc_box.blockSignals(False)
 
-    def detect_encoder(self):
+    def detect_encoder(self, advise=False):
+        """Test encoders in the background. With `advise`, explain how to get GPU
+        recording working if only the CPU encoder works."""
         self.st_enc.setText("Testing encoders...")
+        self._advise_after_detect = advise
 
         def work():
             self.sig.encoder_done.emit(encoders.detect())
         threading.Thread(target=work, daemon=True).start()
 
     def _on_encoder_detected(self, key):
+        self.s.vaapi_device = encoders.VAAPI_DEVICE
+        self.s.detected_version = __version__
         self._set("detected_encoder", key)
         self._fill_encoders()
         self._update_status_static()
         self._notify(f"Best encoder: {encoders.label(key)}")
+        gpu = any(e.key == key and e.gpu for e in encoders.candidates())
+        if getattr(self, "_advise_after_detect", False) and not gpu:
+            self._advise_after_detect = False
+            advice = sysinfo.gpu_advice()
+            if advice:
+                box = QMessageBox(self)
+                box.setWindowTitle(APP_NAME)
+                box.setText("KalciCam is recording with the CPU, which uses a lot of power.\n\n"
+                            + "\n\n".join(a.text for a in advice)
+                            + "\n\nThe setup wizard can fix this for you.")
+                setup = box.addButton("Open setup", QMessageBox.AcceptRole)
+                box.addButton("Later", QMessageBox.RejectRole)
+                box.exec()
+                if box.clickedButton() is setup:
+                    self.request_setup.emit()
 
     def _update_status_static(self):
         key = self.s.encoder if self.s.encoder != "auto" else self.s.detected_encoder

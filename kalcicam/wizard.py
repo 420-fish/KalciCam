@@ -11,7 +11,7 @@ from PySide6.QtGui import QGuiApplication, QPainter, QPainterPath
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QFileDialog, QGridLayout, QHBoxLayout,
                                QLabel, QPlainTextEdit, QStackedWidget, QVBoxLayout, QWidget)
 
-from . import APP_NAME, config, encoders, hotkeys, icons, paths, sysinfo, themes
+from . import APP_NAME, __version__, config, encoders, hotkeys, icons, paths, sysinfo, themes
 from .widgets import (Background, StepBar, ThemeCard, app_icon, button, icon_label, label, panel, photo,
                       pynput_to_qt, row, toggle)
 
@@ -76,7 +76,7 @@ class SetupWizard(QDialog):
 
         self.sig.log.connect(self._log)
         self.sig.done.connect(self._gpu_done)
-        self.sig.installed.connect(lambda _: (self.install_btn.setEnabled(True), self._recheck()))
+        self.sig.installed.connect(self._on_installed)
         self._apply_theme(themes.get(s.theme))
         self._go(0)
 
@@ -221,12 +221,16 @@ class SetupWizard(QDialog):
         self.copy_btn.setVisible(bool(self._cmd_text))
 
     def _install(self):
-        cmd = self._cmd_text.replace("sudo ", "", 1).split()
+        self._run_install(self._cmd_text.replace("sudo ", "", 1).split(), self.dep_log, self.install_btn)
+
+    def _run_install(self, cmd, log_box, btn):
+        """Run a package install through pkexec (graphical password prompt)."""
         if cmd and cmd[0] == "pacman":
             cmd.append("--noconfirm")
-        self.dep_log.show()
-        self.dep_log.setPlainText("$ pkexec " + " ".join(cmd) + "\n")
-        self.install_btn.setEnabled(False)
+        log_box.show()
+        log_box.setPlainText("$ pkexec " + " ".join(cmd) + "\n")
+        btn.setEnabled(False)
+        self._install_btn_busy = btn
 
         def work():
             try:
@@ -240,6 +244,15 @@ class SetupWizard(QDialog):
                 self.sig.log.emit(str(e))
             self.sig.installed.emit(ok)
         threading.Thread(target=work, daemon=True).start()
+
+    def _on_installed(self, ok):
+        btn = getattr(self, "_install_btn_busy", None)
+        if btn:
+            btn.setEnabled(True)
+        if self.stack.currentIndex() == 2:
+            self._recheck()
+        elif ok and self.stack.currentIndex() == 3:
+            self._run_gpu()  # driver installed: test again straight away
 
     def _log(self, line):
         target = self.dep_log if self.stack.currentIndex() == 2 else self.gpu_log
@@ -257,10 +270,20 @@ class SetupWizard(QDialog):
         v.addWidget(self.gpu_log)
         self.gpu_result = label("", "h2", wrap=True)
         v.addWidget(self.gpu_result)
+        self.gpu_advice = label("", "sub", wrap=True)
+        self.gpu_advice.hide()
+        v.addWidget(self.gpu_advice)
         self.gpu_again = button("Test again", icon="refresh")
         self.gpu_again.clicked.connect(self._run_gpu)
-        v.addLayout(row(self.gpu_again))
+        self.gpu_install = button("Install GPU driver", "primary", "Asks for your password", icon="bolt")
+        self.gpu_install.clicked.connect(self._install_gpu)
+        self.gpu_install.hide()
+        self.gpu_dm = button("Open Driver Manager", icon="wand")
+        self.gpu_dm.clicked.connect(self._open_driver_manager)
+        self.gpu_dm.hide()
+        v.addLayout(row(self.gpu_install, self.gpu_dm, self.gpu_again))
         v.addStretch(1)
+        self._gpu_packages = []
         self._gpu_ran = False
         return w
 
@@ -272,12 +295,16 @@ class SetupWizard(QDialog):
         self.next.setEnabled(False)
 
         def work():
-            key = encoders.detect(lambda lbl, ok: self.sig.log.emit(f"{'[ OK ]' if ok else '[FAIL]'}  {lbl}"))
+            def show(lbl, ok, err=""):
+                self.sig.log.emit(f"{'[ OK ]' if ok else '[FAIL]'}  {lbl}" + (f"\n        {err}" if err and not ok else ""))
+            key = encoders.detect(show)
             self.sig.done.emit(key)
         threading.Thread(target=work, daemon=True).start()
 
     def _gpu_done(self, key):
         self.s.detected_encoder = key
+        self.s.vaapi_device = encoders.VAAPI_DEVICE
+        self.s.detected_version = __version__
         self.s.encoder = "auto"
         gpu = any(e.key == key and e.gpu for e in encoders.candidates())
         self.gpu_result.setText(f"Using {encoders.label(key)} " +
@@ -285,6 +312,25 @@ class SetupWizard(QDialog):
                                  "(no GPU encoder found, so CPU mode is set to its lightest preset)"))
         self.gpu_again.setEnabled(True)
         self.next.setEnabled(True)
+        # Explain how to get GPU recording working, with one-click fixes where possible.
+        advice = [] if gpu else sysinfo.gpu_advice()
+        self._gpu_packages = [p for a in advice for p in a.packages]
+        self.gpu_advice.setText("\n\n".join(a.text for a in advice) +
+                                ("\n\nAfter installing, press Test again." if advice else ""))
+        self.gpu_advice.setVisible(bool(advice))
+        can_pk = bool(self._gpu_packages) and shutil.which("pkexec") and sysinfo.package_manager()
+        self.gpu_install.setVisible(bool(can_pk))
+        self.gpu_dm.setVisible(any(a.driver_manager for a in advice) and sysinfo.driver_manager_command() is not None)
+
+    def _install_gpu(self):
+        pm = sysinfo.package_manager()
+        self._run_install(sysinfo.INSTALL_CMD[pm].replace("sudo ", "", 1).split() + self._gpu_packages,
+                          self.gpu_log, self.gpu_install)
+
+    def _open_driver_manager(self):
+        cmd = sysinfo.driver_manager_command()
+        if cmd:
+            subprocess.Popen(cmd, start_new_session=True)
 
     def _folder(self):
         w, v = self._page()

@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +29,12 @@ from .config import Settings
 # ---------------- process wrapper ----------------
 
 _log_lock = threading.Lock()
+
+
+# PR_SET_PDEATHSIG fires when the *thread* that started the child exits, not the
+# whole process. So every capture process is started from this one long-lived
+# thread; that way the signal only arrives if KalciCam itself dies.
+_SPAWNER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="spawner")
 
 
 def _die_with_parent():
@@ -94,6 +101,17 @@ def log(msg: str):
         pass
 
 
+def _explain(runner, code: int) -> str:
+    """A readable reason for a capture process that died, plus where the log is."""
+    detail = runner.err_tail[-1] if runner.err_tail else ""
+    if not detail:
+        if code < 0:
+            detail = f"the capture program was stopped by the system (signal {-code})"
+        else:
+            detail = f"the capture program quit (exit code {code})"
+    return f"{detail}\n\nDetails are in the log:\n{paths.cache_dir() / 'kalcicam.log'}"
+
+
 class Runner:
     """One capture process. Reads ffmpeg's -progress output for live stats."""
 
@@ -112,7 +130,7 @@ class Runner:
         if paths.IS_LINUX:
             kw["preexec_fn"] = _die_with_parent
         log("start: " + subprocess.list2cmdline(job.cmd))
-        self.proc = subprocess.Popen(job.cmd, env=env, **kw)
+        self.proc = _SPAWNER.submit(subprocess.Popen, job.cmd, env=env, **kw).result()
         _bind_to_app(self.proc)
         for fd in job.pass_fds:  # the child has its own copy now
             try:
@@ -406,9 +424,8 @@ class Recorder(QObject):
                     self.parts.pop()
             threading.Thread(target=self._start_piece_gdi, daemon=True).start()
             return
-        detail = runner.err_tail[-1] if runner.err_tail else f"exit code {code}"
-        self.error.emit(f"Recording stopped unexpectedly: {detail}")
-        threading.Thread(target=self._finish, daemon=True).start()
+        reason = "Recording stopped unexpectedly: " + _explain(runner, code)
+        threading.Thread(target=self._finish, args=(reason,), daemon=True).start()
 
     def _start_piece_gdi(self, first=True):
         old = self.s.win_capture_engine
@@ -443,7 +460,9 @@ class Recorder(QObject):
         self._set("saving")
         threading.Thread(target=self._finish, daemon=True).start()
 
-    def _finish(self):
+    def _finish(self, reason: str = ""):
+        """Wrap up. `reason` is set when the capture died on its own; it's shown
+        once, together with whatever happened to the file."""
         if self.runner:
             self.runner.stop()
         parts = [p for p in self.parts if os.path.exists(p) and os.path.getsize(p) > 1024]
@@ -468,14 +487,17 @@ class Recorder(QObject):
         if ok:
             shutil.rmtree(self.work, ignore_errors=True)
             self.saved.emit(final)
+            if reason:
+                self.error.emit(f"{reason}\n\nWhat was recorded before that is saved:\n{final}")
         elif parts:
             # Never lose a recording: leave the pieces where the user can find them.
             keep = out_dir / (self.name + "_pieces")
             shutil.move(str(self.work), str(keep))
-            self.error.emit(f"Couldn't convert the video, but the raw MKV pieces are saved in:\n{keep}")
+            self.error.emit((reason + "\n\n" if reason else "") +
+                            f"Couldn't convert the video, but the raw MKV pieces are saved in:\n{keep}")
         else:
             self._cleanup_empty()
-            self.error.emit("Nothing was recorded.")
+            self.error.emit(reason or "Nothing was recorded.")
         self.runner = None
         self._set("idle")
 
@@ -549,8 +571,7 @@ class ReplayBuffer(QObject):
 
     def _on_exit(self, runner, code):
         if not runner.stopping:
-            detail = runner.err_tail[-1] if runner.err_tail else f"exit code {code}"
-            self.error.emit(f"Replay buffer stopped: {detail}")
+            self.error.emit("Replay buffer stopped: " + _explain(runner, code))
         self.state_changed.emit(False)
 
     def stop(self):

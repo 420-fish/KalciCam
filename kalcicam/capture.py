@@ -89,7 +89,7 @@ def ffmpeg_job(s: Settings, target: dict, output: str, replay_dir: str | None = 
 
     cmd = [ff, "-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1",
            "-stats_period", "0.5", "-y"]
-    cmd += encoders.ffmpeg_pre_input(enc)
+    cmd += encoders.ffmpeg_pre_input(enc, s.vaapi_device)
 
     # Audio inputs go first: opening a sound device can take a moment, and if the
     # screen input is already running it falls behind and drops most frames.

@@ -44,6 +44,8 @@ class Settings:
     quality: str = "balanced"
     encoder: str = "auto"  # auto, or a key from encoders.py
     detected_encoder: str = ""
+    vaapi_device: str = ""  # which /dev/dri/renderD* VA-API worked on
+    detected_version: str = ""  # KalciCam version that ran the encoder test (re-test after updates)
     final_format: str = "mp4"  # mp4 | mkv
     keep_mkv: bool = False
     win_capture_engine: str = "ddagrab"  # ddagrab (GPU) | gdigrab (fallback)

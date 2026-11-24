@@ -64,20 +64,28 @@ def label(key: str) -> str:
     return key
 
 
+def render_nodes() -> list[str]:
+    """Every GPU's render device. Hybrid laptops (Intel + NVIDIA) have two or more."""
+    return [f"/dev/dri/renderD{n}" for n in range(128, 136) if os.path.exists(f"/dev/dri/renderD{n}")]
+
+
 def render_node() -> str:
-    for n in range(128, 136):
-        p = f"/dev/dri/renderD{n}"
-        if os.path.exists(p):
-            return p
-    return "/dev/dri/renderD128"
+    nodes = render_nodes()
+    return nodes[0] if nodes else "/dev/dri/renderD128"
+
+
+# The render node VA-API worked on (set by detect(), or loaded from settings).
+VAAPI_DEVICE = ""
+# label -> last error line, for every encoder that failed in the last detect().
+last_failures: dict[str, str] = {}
 
 
 # ---------------- ffmpeg argument builders ----------------
 
-def ffmpeg_pre_input(key: str) -> list[str]:
+def ffmpeg_pre_input(key: str, device: str = "") -> list[str]:
     """Global options that must come before the inputs."""
     if key in ("vaapi", "vaapi_sw"):
-        return ["-vaapi_device", render_node()]
+        return ["-vaapi_device", device or VAAPI_DEVICE or render_node()]
     return []
 
 
@@ -147,7 +155,7 @@ def gst_encoder_chain(key: str, quality: str, fps: int, pixels: int = 1920 * 108
 
 # ---------------- detection ----------------
 
-def _test_cmd(key: str, be: str) -> list[str] | None:
+def _test_cmd(key: str, be: str, device: str = "") -> list[str] | None:
     if be == "gst":
         gst = "gst-launch-1.0"
         chain = gst_encoder_chain(key, "balanced", 30)
@@ -165,7 +173,7 @@ def _test_cmd(key: str, be: str) -> list[str] | None:
         src = ["-f", "lavfi", "-i", "ddagrab=output_idx=0:framerate=30"]
         hw = True
     vf = ffmpeg_video_filter(key, be, hw)
-    cmd = [ff, "-hide_banner", "-loglevel", "error"] + ffmpeg_pre_input(key) + src
+    cmd = [ff, "-hide_banner", "-loglevel", "error"] + ffmpeg_pre_input(key, device) + src
     if vf:
         cmd += ["-vf", vf]
     cmd += ffmpeg_encoder_args(key, 23, 30, 4000) + ["-frames:v", "15", "-f", "null", "-"]
@@ -184,9 +192,9 @@ def _split_gst(chain: str) -> list[str]:
 split_gst = _split_gst
 
 
-def test(key: str, be: str | None = None) -> tuple[bool, str]:
+def test(key: str, be: str | None = None, device: str = "") -> tuple[bool, str]:
     be = be or backend()
-    cmd = _test_cmd(key, be)
+    cmd = _test_cmd(key, be, device)
     if not cmd:
         return False, "ffmpeg not found"
     try:
@@ -202,11 +210,22 @@ def test(key: str, be: str | None = None) -> tuple[bool, str]:
 
 def detect(progress=None) -> str:
     """Return the key of the best working encoder. `progress(label, ok)` is called per try."""
+    global VAAPI_DEVICE
     be = backend()
+    last_failures.clear()
     for enc in candidates(be):
-        ok, _ = test(enc.key, be)
-        if progress:
-            progress(enc.label, ok)
-        if ok:
-            return enc.key
+        if be == "ffmpeg_linux" and enc.key in ("vaapi", "vaapi_sw"):
+            # Try each GPU: on hybrid laptops the first node is often the wrong one.
+            tries = [(n, f"{enc.label} on {os.path.basename(n)}") for n in render_nodes()] or [("", enc.label)]
+        else:
+            tries = [("", enc.label)]
+        for device, lbl in tries:
+            ok, err = test(enc.key, be, device)
+            if progress:
+                progress(lbl, ok, err)
+            if ok:
+                if device:
+                    VAAPI_DEVICE = device
+                return enc.key
+            last_failures[lbl] = err
     return candidates(be)[-1].key

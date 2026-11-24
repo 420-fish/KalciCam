@@ -18,11 +18,13 @@ def _parse(argv):
         g.add_argument(f"--{c}", action="store_true", help=h)
     p.add_argument("--setup", action="store_true", help="run the setup wizard again")
     p.add_argument("--minimized", action="store_true", help="start hidden in the tray")
+    p.add_argument("--selftest", action="store_true", help="record a few seconds and report what works")
     p.add_argument("--version", action="version", version=f"{APP_NAME} {__version__}")
     return p.parse_args(argv)
 
 
 def main(argv=None):
+    paths.clean_environment()
     args = _parse(sys.argv[1:] if argv is None else argv)
     cmd = next((c for c in ("toggle", "pause", "screenshot", "replay", "show") if getattr(args, c)), None)
 
@@ -41,6 +43,11 @@ def main(argv=None):
     app.setApplicationDisplayName(APP_NAME)
     app.setDesktopFileName("kalcicam")
     app.setQuitOnLastWindowClosed(False)
+
+    if args.selftest:
+        from . import selftest
+
+        return selftest.run(app)
 
     from . import hotkeys
 
@@ -123,8 +130,9 @@ def main(argv=None):
         win.dir_lbl.setText(str(s.video_dir()))
     win.request_setup.connect(setup_again)
 
-    if not s.detected_encoder:
-        win.detect_encoder()
+    if not s.detected_encoder or s.detected_version != __version__:
+        # First start, or KalciCam was updated: test the encoders again in the background.
+        win.detect_encoder(advise=s.first_run_done)
 
     if args.minimized and win.tray:
         win.tray.showMessage(APP_NAME, "KalciCam is ready in the tray.", app_icon(), 2500)

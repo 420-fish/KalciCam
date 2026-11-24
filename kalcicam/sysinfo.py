@@ -127,6 +127,81 @@ def _gst_has(element: str) -> bool:
 gst_has = _gst_has
 
 
+# ---------- graphics cards (for GPU-encoding advice) ----------
+
+@dataclass
+class GpuAdvice:
+    text: str
+    packages: list  # apt/dnf/... packages that would fix it (installable with pkexec)
+    driver_manager: bool = False  # suggest the distro's driver tool (NVIDIA)
+
+
+def gpus() -> list[str]:
+    """'nvidia' / 'amd' / 'intel' for each graphics card lspci reports."""
+    out = []
+    try:
+        txt = subprocess.run(["lspci"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return out
+    for line in txt.splitlines():
+        if not re.search(r"VGA compatible|3D controller|Display controller", line):
+            continue
+        low = line.lower()
+        if "nvidia" in low:
+            out.append("nvidia")
+        elif "amd" in low or "ati " in low or "radeon" in low:
+            out.append("amd")
+        elif "intel" in low:
+            out.append("intel")
+    return out
+
+
+def nvidia_driver_loaded() -> bool:
+    return os.path.exists("/proc/driver/nvidia/version")
+
+
+VA_PACKAGES = {
+    "apt": {"intel": ["intel-media-va-driver-non-free"], "amd": ["mesa-va-drivers"]},
+    "dnf": {"intel": ["intel-media-driver"], "amd": ["mesa-va-drivers"]},
+    "pacman": {"intel": ["intel-media-driver"], "amd": ["libva-mesa-driver"]},
+    "zypper": {"intel": ["intel-media-driver"], "amd": ["libva-mesa-driver"]},
+}
+
+
+def gpu_advice() -> list[GpuAdvice]:
+    """Why GPU encoding might not work here, and what would fix it."""
+    if paths.IS_WINDOWS:
+        return []
+    found = gpus()
+    pm = package_manager()
+    advice = []
+    if "nvidia" in found:
+        if not nvidia_driver_loaded():
+            advice.append(GpuAdvice(
+                "Your NVIDIA card can record with almost no CPU, but it needs NVIDIA's own driver "
+                "(right now it's using the open 'nouveau' driver, which can't encode video). Open "
+                "Driver Manager, pick the recommended nvidia-driver, and restart.", [], driver_manager=True))
+        else:
+            advice.append(GpuAdvice(
+                "The NVIDIA driver is installed but its video encoder didn't answer. Updating the driver in "
+                "Driver Manager and restarting usually fixes it.", [], driver_manager=True))
+    for vendor in ("intel", "amd"):
+        if vendor in found:
+            pk = VA_PACKAGES.get(pm, {}).get(vendor, [])
+            name = "Intel" if vendor == "intel" else "AMD"
+            advice.append(GpuAdvice(
+                f"Your {name} graphics can also record on the GPU once its video driver is installed"
+                + (f" ({', '.join(pk)})." if pk else "."), pk))
+    return advice
+
+
+def driver_manager_command() -> list[str] | None:
+    for cmd in (["mintdrivers"], ["software-properties-gtk", "--open-tab=4"], ["nvidia-settings"]):
+        if shutil.which(cmd[0]):
+            return cmd
+    return None
+
+
 # ---------- audio devices ----------
 
 @dataclass

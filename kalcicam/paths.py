@@ -78,6 +78,30 @@ def ffmpeg() -> str | None:
     return find_program("ffmpeg")
 
 
+def clean_environment():
+    """Stop our bundled libraries leaking into programs we launch (Linux builds).
+
+    The AppImage/PyInstaller launcher puts its own lib folder on LD_LIBRARY_PATH so
+    KalciCam starts. If that leaks into the system's ffmpeg, pactl, xdg-open..., they
+    load our (older) copies of shared libraries and break, e.g. ffmpeg loses its GPU
+    encoders. The dynamic linker only reads LD_LIBRARY_PATH at process start, so
+    restoring it here is safe for KalciCam itself.
+    """
+    if not IS_LINUX:
+        return
+    if "KALCICAM_LD_ORIG" in os.environ:  # saved by our AppRun before it changed anything
+        orig = os.environ.pop("KALCICAM_LD_ORIG")
+    else:
+        orig = os.environ.get("LD_LIBRARY_PATH_ORIG", os.environ.get("LD_LIBRARY_PATH", ""))
+    bundle_dirs = [d for d in (getattr(sys, "_MEIPASS", None), os.environ.get("APPDIR")) if d]
+    keep = [p for p in orig.split(":") if p and not any(p.startswith(b) for b in bundle_dirs)]
+    if keep:
+        os.environ["LD_LIBRARY_PATH"] = ":".join(keep)
+    else:
+        os.environ.pop("LD_LIBRARY_PATH", None)
+    os.environ.pop("LD_LIBRARY_PATH_ORIG", None)
+
+
 def no_window_flags() -> int:
     """On Windows, keep ffmpeg from flashing a console window."""
     if IS_WINDOWS:

@@ -22,8 +22,13 @@ jobs:
         env:
           PYTHON: python
         run: bash packaging/linux/build_appimage.sh
-      - name: Self-test
+      - name: Unit tests
         run: python -m pip install -q -r requirements.txt && python tests/test_capture.py
+      - name: Real recording test (packaged AppImage on a virtual X11 screen)
+        run: |
+          sudo apt-get install -y ffmpeg xvfb
+          xvfb-run -a -s "-screen 0 1280x720x24" \
+            dist/KalciCam-x86_64.AppImage --appimage-extract-and-run --selftest
       - uses: actions/upload-artifact@v4
         with:
           name: KalciCam-Linux-AppImage
