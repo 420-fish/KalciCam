@@ -1,0 +1,4 @@
+PySide6-Essentials>=6.7
+PySide6-Addons>=6.7
+pynput>=1.7.6
+dbus-fast>=2.0; sys_platform == "linux"

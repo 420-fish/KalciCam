@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=KalciCam
+GenericName=Screen Recorder
+Comment=Lightweight screen recorder
+Exec=kalcicam
+Icon=kalcicam
+Terminal=false
+Categories=AudioVideo;Video;Recorder;

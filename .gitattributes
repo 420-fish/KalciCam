@@ -1,0 +1,7 @@
+*.sh text eol=lf
+packaging/linux/AppRun text eol=lf
+packaging/linux/*.desktop text eol=lf
+*.webp binary
+*.ttf binary
+*.png binary
+*.ico binary
