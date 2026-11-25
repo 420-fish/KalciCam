@@ -1,5 +1,9 @@
 # KalciCam
 
+<p align="center">
+  <img src="https://github.com/420-fish/KalciCam/releases/download/pictures/kalcicam-flying.png" width="420" alt="">
+</p>
+
 KalciCam is a screen recorder for Linux. It records your screen, your game, or just your sound, and saves it as a video you can share.
 
 It uses your graphics card to do the hard work, so your computer stays fast while you record.
@@ -114,3 +118,7 @@ It records for a few seconds and shows what works and what doesn't. Send that te
 ## Getting a new version
 
 Download the new file from the **[Releases page](../../releases/latest)**, delete the old one, and do step 4 again. Your settings stay the same.
+
+<p align="center">
+  <img src="https://github.com/420-fish/KalciCam/releases/download/pictures/kalcicam-dancing.png" width="260" alt="">
+</p>
