@@ -5,7 +5,7 @@ and these pure functions turn settings + target into a command line. Keeping
 them pure makes them easy to test on any OS.
 
 target keys:
-  X11:      x, y, w, h (absolute physical px)       or  window_id
+  X11:      x, y, w, h (absolute physical px), follow  or  window_id
   Windows:  output_idx, and optionally rx, ry, w, h  or  title
   Wayland:  node, fd, and optionally crop {l, t, r, b}
 """
@@ -108,6 +108,9 @@ def ffmpeg_job(s: Settings, target: dict, output: str, replay_dir: str | None = 
         if target.get("window_id"):
             cmd += ["-window_id", target["window_id"], "-i", display]
         else:
+            if target.get("follow"):
+                # "Around mouse": x11grab moves the capture box with the cursor itself.
+                cmd += ["-follow_mouse", "centered"]
             cmd += ["-video_size", f"{_even(target['w'])}x{_even(target['h'])}",
                     "-i", f"{display}+{int(target['x'])},{int(target['y'])}"]
     else:
@@ -207,7 +210,47 @@ def gst_job(s: Settings, target: dict, output: str, replay_dir: str | None = Non
     return Job(cmd, replay_dir or output, stop="sigint", pass_fds=(int(target["fd"]),))
 
 
+# ---------------- audio only ----------------
+
+AUDIO_FORMATS = {
+    # key: (final extension, codec args)
+    "m4a": (".m4a", ["-c:a", "aac", "-b:a", "192k"]),
+    "mp3": (".mp3", ["-c:a", "libmp3lame", "-b:a", "192k"]),
+}
+
+
+def audio_job(s: Settings, output: str) -> Job:
+    """Sound only (desktop and/or mic) into a crash-safe .mka piece. Uses ffmpeg with
+    PulseAudio/PipeWire on Linux (X11 and Wayland alike) and DirectShow on Windows."""
+    be = encoders.backend()
+    ff = paths.ffmpeg() or "ffmpeg"
+    audio = _audio_sources(s)
+    if not audio:
+        raise ValueError("Turn on desktop sound or the microphone to record audio only.")
+    cmd = [ff, "-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1",
+           "-stats_period", "0.5", "-y"]
+    for dev, _vol in audio:
+        if be == "ffmpeg_win":
+            cmd += ["-thread_queue_size", "1024", "-f", "dshow", "-i", f"audio={dev}"]
+        else:
+            cmd += ["-thread_queue_size", "1024", "-f", "pulse", "-i", dev]
+    parts, labels = [], ""
+    for i, (_dev, v) in enumerate(audio):
+        parts.append(f"[{i}:a]volume={v / 100:.2f}[a{i}]")
+        labels += f"[a{i}]"
+    if len(audio) > 1:
+        parts.append(f"{labels}amix=inputs={len(audio)}:duration=longest:normalize=0[aout]")
+    else:
+        parts[0] = parts[0].replace("[a0]", "[aout]")
+    cmd += ["-filter_complex", ";".join(parts), "-map", "[aout]", "-vn"]
+    cmd += AUDIO_FORMATS.get(s.audio_format, AUDIO_FORMATS["m4a"])[1]
+    cmd += ["-f", "matroska", output]
+    return Job(cmd, output)
+
+
 def build_job(s: Settings, target: dict, output: str, replay_dir: str | None = None) -> Job:
+    if s.mode == "audio" and not replay_dir:
+        return audio_job(s, output)
     if encoders.backend() == "gst":
         return gst_job(s, target, output, replay_dir)
     return ffmpeg_job(s, target, output, replay_dir)
@@ -220,15 +263,18 @@ def concat_cmd(list_file: str, output: str) -> list:
     ff = paths.ffmpeg() or "ffmpeg"
     cmd = [ff, "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", list_file,
            "-c", "copy"]
-    if output.endswith(".mp4"):
-        cmd += ["-movflags", "+faststart"]
-    return cmd + [output]
+    return cmd + _faststart(output) + [output]
+
+
+def _faststart(output: str) -> list:
+    """MP4/M4A: put the index at the front so players start instantly."""
+    return ["-movflags", "+faststart"] if output.lower().endswith((".mp4", ".m4a", ".mov")) else []
 
 
 def remux_cmd(src: str, output: str) -> list:
     ff = paths.ffmpeg() or "ffmpeg"
-    return [ff, "-hide_banner", "-loglevel", "error", "-y", "-i", src, "-map", "0", "-c", "copy",
-            "-movflags", "+faststart", output]
+    return [ff, "-hide_banner", "-loglevel", "error", "-y", "-i", src, "-map", "0", "-c", "copy"] + \
+        _faststart(output) + [output]
 
 
 def thumbnail_cmd(video: str, png: str) -> list:

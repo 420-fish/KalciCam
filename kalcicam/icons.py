@@ -118,6 +118,29 @@ def _shapes(name):
     elif name == "window":
         S += [_rect(3, 4, 18, 16), _poly((3, 8.5), (21, 8.5))]
         F += [_circle(6, 6.3, 0.9), _circle(8.8, 6.3, 0.9)]
+    elif name == "rect":  # rectangle on a screen: frame with a resize arrow
+        S += [_rect(3, 5, 18, 14), _poly((9, 15), (15, 9)), _poly((11, 9), (15, 9), (15, 13))]
+    elif name == "mouse_area":  # around mouse: dashed box with a cursor inside
+        for (x0, y0, x1, y1) in ((3, 3, 8, 3), (12, 3, 16, 3), (21, 3, 21, 8), (21, 12, 21, 16),
+                                 (3, 21, 6, 21), (3, 3, 3, 8), (3, 12, 3, 17)):
+            S += [_poly((x0, y0), (x1, y1))]
+        S += [_poly((10, 9), (10, 21), (13, 18), (15.5, 22.5), (17.5, 21.5), (15, 17), (19, 17), close=True)]
+    elif name == "gamepad":
+        p = QPainterPath()
+        p.addRoundedRect(QRectF(2.5, 7, 19, 11), 5, 5)
+        S += [p, _poly((7, 10.5), (7, 14.5)), _poly((5, 12.5), (9, 12.5))]
+        F += [_circle(15.5, 11, 1.3), _circle(18, 13.5, 1.3)]
+    elif name == "chevron_up":
+        S += [_poly((5, 15), (12, 8), (19, 15))]
+    elif name == "chevron_down":
+        S += [_poly((5, 9), (12, 16), (19, 9))]
+    elif name == "mic_off":
+        p = QPainterPath()
+        p.addRoundedRect(QRectF(9, 3, 6, 11), 3, 3)
+        S += [p, _arc(6, 6, 12, 11, 180, 180), _poly((12, 17), (12, 21)), _poly((4, 4), (20, 20))]
+    elif name == "speaker_off":
+        S += [_poly((3, 9), (7, 9), (12, 4.5), (12, 19.5), (7, 15), (3, 15), close=True),
+              _poly((15, 9), (21, 15)), _poly((21, 9), (15, 15))]
     elif name == "power":
         S += [_arc(4.5, 5, 15, 15, 120, 300), _poly((12, 3), (12, 11))]
     elif name == "rec":

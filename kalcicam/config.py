@@ -35,7 +35,11 @@ class Settings:
     rotate_backgrounds: bool = False
     rotate_minutes: int = 10
     # What to capture
-    mode: str = "fullscreen"  # fullscreen | region | window
+    mode: str = "fullscreen"  # fullscreen | region | rect | mouse | window | audio
+    rect_size: list = field(default_factory=lambda: [1280, 720])  # "Rectangle on a screen" size
+    mouse_size: list = field(default_factory=lambda: [1280, 720])  # "Around mouse" box size
+    audio_format: str = "m4a"  # audio-only file type: m4a | mp3
+    compact: bool = False  # window collapsed to the toolbar strip
     monitor: int = 0
     region: dict = field(default_factory=dict)  # {screen, x, y, w, h} in physical px, relative to screen
     window_id: str = ""  # X11 window id or Windows window title

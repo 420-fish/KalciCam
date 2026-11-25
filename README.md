@@ -1,88 +1,116 @@
 # KalciCam
 
-A lightweight, Bandicam-style screen recorder for Linux, with a Windows test build.
+KalciCam is a screen recorder for Linux. It records your screen, your game, or just your sound, and saves it as a video you can share.
 
-- Records full screen, a region, or a single window, at 60 fps by default
-- Desktop sound and microphone, each with its own volume
-- Webcam bubble, REC timer badge, click ripples
-- Hotkeys: **F12** start/stop, **Shift+F12** pause, **F11** screenshot, **F10** save replay
-- Replay buffer: save the last 30 seconds after something cool happens
-- Recordings browser with thumbnails, tray icon, five picture themes
-- Uses the graphics card to encode (NVIDIA NVENC, AMD/Intel VA-API), so the CPU stays almost idle
-- Crash-safe: records to MKV, converts to MP4 when you stop, and recovers the video if the computer crashes
+It uses your graphics card to do the hard work, so your computer stays fast while you record.
 
 ---
 
-## Installing on Linux
+## Download and start
 
-1. Download `KalciCam-x86_64.AppImage`.
-2. Move it somewhere permanent, for example a folder called `Applications` in your home folder.
-3. Make it runnable: right-click it, open **Properties**, and turn on **Allow executing as program**.
-   Or in a terminal:
-   ```
-   chmod +x KalciCam-x86_64.AppImage
-   ```
-4. Double-click it.
+1. Go to the **[Releases page](../../releases/latest)**.
+2. Download **KalciCam-x86_64.AppImage**.
+3. Put the file somewhere you'll keep it, for example a folder called **Applications** in your home folder.
+4. Right-click the file, open **Properties**, and turn on **"Allow executing file as program"**.
+5. Double-click it.
 
-The setup wizard opens the first time and walks you through:
+The first time, a setup helper opens. Just follow it. It will:
 
-- picking a theme
-- checking that FFmpeg and the other tools are installed (it can install them for you after asking for your password)
-- testing your graphics card to find the fastest encoder
-- choosing where videos are saved
-- setting up hotkeys
-- adding KalciCam to your app menu
-
-Run it again any time from **About > Run setup again**.
-
-### Wayland (Ubuntu, Fedora, newer KDE)
-
-- When you press REC the first time, the system asks which screen to share. Tick "remember", and it won't ask again.
-- Wayland doesn't let apps listen for keys in the background, so the hotkeys become desktop keyboard shortcuts. On GNOME the wizard sets them up for you. On KDE and others, bind keys to these commands in your system's shortcut settings:
-  ```
-  /path/to/KalciCam-x86_64.AppImage --toggle
-  /path/to/KalciCam-x86_64.AppImage --pause
-  /path/to/KalciCam-x86_64.AppImage --screenshot
-  /path/to/KalciCam-x86_64.AppImage --replay
-  ```
-- Click ripples only work in an X11 session.
-
-### If something goes wrong
-
-There's a log at `~/.cache/kalcicam/kalcicam.log`. It shows the exact capture command and any error.
+- let you pick a look
+- check that your computer has everything it needs, and install anything missing (it asks for your password)
+- test your graphics card
+- ask where to save your videos
+- add KalciCam to your app menu
 
 ---
 
-## Windows test build
+## Recording
 
-Unzip `KalciCam-Windows-Test.zip` and run `KalciCam\KalciCam.exe`. It needs FFmpeg installed:
-```
-winget install Gyan.FFmpeg
-```
-Desktop sound on Windows needs a loopback device such as "Stereo Mix". The Linux version records desktop sound without any extra setup.
+Press the big **REC** button, or press **F12**.
+Press it again to stop. Your video is saved right away.
+
+| Key | What it does |
+|---|---|
+| **F12** | Start or stop recording |
+| **Shift + F12** | Pause or keep going |
+| **F11** | Take a screenshot |
+| **F10** | Save the last few seconds (replay) |
+
+You can change these keys in **Extras**.
+
+While you record, the KalciCam icon in your panel turns into a **red dot**. It turns **yellow** when paused. Put your mouse on it to see the time.
 
 ---
 
-## Building
+## What you can record
 
-**Windows test zip** (on Windows, from this folder):
-```
-powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
-```
-Add `-BundleFfmpeg` to put ffmpeg.exe inside the folder, which adds about 200 MB.
+Click the mode button at the top (it says **Fullscreen** at first) to pick:
 
-**Linux AppImage** (on any x86_64 Linux, Ubuntu 22.04 or older is best):
+- **Select a recording area**: drag a box over the part of the screen you want.
+- **Rectangle on a screen**: pick a size (like 1280 x 720), then click to place the box.
+- **Fullscreen**: the whole screen.
+- **Specific window**: just one window.
+- **Around mouse**: a box that follows your mouse around.
+- **Audio only**: just sound, no video. Saved as M4A or MP3.
+
+The line under the buttons always shows exactly what will be recorded.
+
+**Game button:** one click sets everything up for games: full screen, smooth 60 fps, game sound on, mouse hidden, and replay ready.
+
+---
+
+## Sound
+
+The **speaker** and **microphone** buttons at the top turn sound on and off.
+The little bars next to them move when sound is coming in.
+
+You can pick different speakers or mics and change the volume in **Audio**.
+
+---
+
+## Make the window small
+
+Click the small arrow in the top-right corner. KalciCam shrinks to just the buttons.
+Click it again to make it big. KalciCam remembers which size you used last.
+
+---
+
+## Other things
+
+- **Replay** (in **Extras**): keeps the last 30 seconds ready. Press **F10** to save them after something cool happens.
+- **Webcam bubble** (in **Overlays**): shows your webcam in a circle you can drag around.
+- **Themes**: pick one of five pictures for the background.
+- **Recordings**: see, play, and delete your videos.
+
+Videos are saved in your **Videos** folder, inside **KalciCam**.
+
+---
+
+## Problems?
+
+**It says it's recording with the CPU.**
+That means it can't use your graphics card yet. Open **About**, click **Run setup again**, and follow the graphics card step. It tells you what to install.
+
+**No sound in my video.**
+Check that the speaker or microphone button at the top is on, and that the little bars move when there's sound.
+
+**The keys (F12 and so on) don't work.**
+On some newer Linux desktops (called "Wayland"), apps can't listen for keys in the background. Go to **Extras** to see how to add the keys in your system's keyboard settings.
+
+**"Around mouse" is greyed out.**
+It only works on Linux desktops like Linux Mint (called "X11"), not on newer "Wayland" desktops.
+
+**Something else is wrong.**
+Open a terminal in the folder with the file and run:
+
 ```
-sudo apt install python3-venv libxcb-cursor0 curl
-bash packaging/linux/build_appimage.sh
+./KalciCam-x86_64.AppImage --selftest
 ```
 
-**Without a Linux PC:** push this folder to a GitHub repository, open **Actions > Build KalciCam > Run workflow**, and download both builds from the finished run.
+It records for a few seconds and shows what works and what doesn't. Send that text to whoever gave you KalciCam.
 
-**Run from source:**
-```
-pip install -r requirements.txt
-python main.py
-```
+---
 
-Fonts: Bungee and Barlow Condensed, under the SIL Open Font License (license files are in `kalcicam/assets/fonts`).
+## Getting a new version
+
+Download the new file from the **[Releases page](../../releases/latest)**, delete the old one, and do step 4 again. Your settings stay the same.

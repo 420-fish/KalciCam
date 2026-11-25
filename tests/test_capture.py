@@ -102,6 +102,48 @@ def test_wayland_replay():
     assert "splitmuxsink" in c and "mux.video" in c and "mux.audio_0" in c
 
 
+def test_x11_around_mouse():
+    s = _settings(desktop_audio=False, mode="mouse")
+    with _with_backend("ffmpeg_linux"):
+        c = capture.ffmpeg_job(s, {"x": 100, "y": 50, "w": 1280, "h": 720, "follow": True}, "o.mkv").cmd
+    assert c[c.index("-follow_mouse") + 1] == "centered"
+    assert c.index("-follow_mouse") < c.index("-video_size")
+    assert "1280x720" in c
+
+
+def test_audio_only_m4a_two_sources():
+    s = _settings(mode="audio", mic=True, mic_volume=80)
+    with _with_backend("ffmpeg_linux"), \
+            mock.patch.object(sysinfo, "default_desktop_source", return_value="sink.monitor"), \
+            mock.patch.object(sysinfo, "default_mic_source", return_value="mic0"):
+        job = capture.build_job(s, {}, "/tmp/part000.mka")
+    c = job.cmd
+    assert "x11grab" not in c and "-vn" in c
+    assert c.count("pulse") == 2 and "amix=inputs=2" in c[c.index("-filter_complex") + 1]
+    assert c[c.index("-c:a") + 1] == "aac" and c[-3:] == ["-f", "matroska", "/tmp/part000.mka"]
+
+
+def test_audio_only_mp3_and_needs_a_source():
+    s = _settings(mode="audio", audio_format="mp3")
+    with _with_backend("ffmpeg_linux"), mock.patch.object(sysinfo, "default_desktop_source", return_value="m"):
+        c = capture.audio_job(s, "p.mka").cmd
+    assert c[c.index("-c:a") + 1] == "libmp3lame"
+    assert "[0:a]volume=1.00[aout]" in c
+    s = _settings(mode="audio", desktop_audio=False, mic=False)
+    with _with_backend("ffmpeg_linux"):
+        try:
+            capture.audio_job(s, "p.mka")
+            raise AssertionError("expected an error")
+        except ValueError:
+            pass
+
+
+def test_faststart_only_for_mp4_family():
+    assert "-movflags" in capture.remux_cmd("a.mkv", "a.mp4")
+    assert "-movflags" in capture.remux_cmd("a.mka", "a.m4a")
+    assert "-movflags" not in capture.remux_cmd("a.mka", "a.mp3")
+
+
 def test_hotkey_conversion():
     from kalcicam.widgets import pynput_to_qt, qt_to_pynput
     from kalcicam.hotkeys import _gnome_accel

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QFileDialo
 from . import APP_NAME, __version__, capture, config, encoders, hotkeys, icons, paths, sysinfo, themes
 from .overlays import ClickHighlighter, Hud, RegionSelector, WebcamBubble
 from .recorder import WAYLAND, Recorder, ReplayBuffer, run_quiet, stamp
+from .meters import LevelMeter
 from .widgets import (Background, RecButton, ThemeCard, VolumeSlider, app_icon, button, hms, human_size,
                       icon_label, label, panel, pynput_to_qt, qt_to_pynput, row, toggle, tool_button)
 
@@ -83,6 +84,8 @@ class MainWindow(QMainWindow):
             self.clicks.start()
         if self.s.replay_enabled:
             QTimer.singleShot(1500, self.replay.start)
+        if self.s.compact:  # open in the size used last time
+            self.set_compact(True)
 
     # ======================================================== layout
     def _build(self):
@@ -94,7 +97,10 @@ class MainWindow(QMainWindow):
 
         root.addWidget(self._build_header())
 
-        body = QHBoxLayout()
+        # Everything below the toolbar lives in one container so "collapse" can hide it.
+        self.body_w = QWidget()
+        body = QHBoxLayout(self.body_w)
+        body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(12)
         nav_l = QVBoxLayout()
         nav_l.setSpacing(4)
@@ -117,8 +123,9 @@ class MainWindow(QMainWindow):
             scroll.setWidget(page)
             self.stack.addWidget(scroll)
         body.addWidget(panel(self._wrap(self.stack), (20, 18, 14, 16), tape=("tr",), seed=3), 1)
-        root.addLayout(body, 1)
-        root.addWidget(self._build_status())
+        root.addWidget(self.body_w, 1)
+        self.status_panel = self._build_status()
+        root.addWidget(self.status_panel)
         self.nav_group.button(0).setChecked(True)
 
     @staticmethod
@@ -128,37 +135,47 @@ class MainWindow(QMainWindow):
         return v
 
     def _build_header(self):
+        outer = QVBoxLayout()
+        outer.setSpacing(6)
         h = QHBoxLayout()
-        h.setSpacing(10)
+        h.setSpacing(8)
         logo = QLabel()
         logo.setPixmap(app_icon().pixmap(46, 46))
         h.addWidget(logo)
-        name = QVBoxLayout()
+        self.name_box = QWidget()
+        name = QVBoxLayout(self.name_box)
+        name.setContentsMargins(0, 0, 0, 0)
         name.setSpacing(0)
         name.addWidget(label(APP_NAME, "title"))
         self.sub_lbl = label("SCREEN RECORDER", "tag")
         name.addWidget(self.sub_lbl)
-        h.addLayout(name)
-        h.addSpacing(18)
+        h.addWidget(self.name_box)
+        h.addSpacing(10)
 
-        self.mode_group = QButtonGroup(self)
-        for i, (key, text, tip, ic) in enumerate([
-            ("fullscreen", "Full screen", "Record a whole monitor", "monitor"),
-            ("region", "Region", "Drag to pick part of the screen", "region"),
-            ("window", "Window", "Record a single window", "window"),
-        ]):
-            b = button(text, "mode", tip, checkable=True, icon=ic, role="toggle")
-            b.setProperty("key", key)
-            self.mode_group.addButton(b, i)
-            h.addWidget(b)
-            if key == self.s.mode:
-                b.setChecked(True)
-        self.mode_group.idClicked.connect(self._on_mode)
+        # Mode picker: one button with a dropdown, like a recorder's mode menu.
+        self.mode_btn = button("", "mode", "Choose what to record", icon="monitor", role="plain")
+        self.mode_btn.setMinimumWidth(190)
+        self.mode_menu = QMenu(self)
+        self.mode_menu.aboutToShow.connect(self._show_mode_menu)
+        self.mode_btn.setMenu(self.mode_menu)
+        h.addWidget(self.mode_btn)
+        self.game_btn = button("Game", "mode", "One click: full screen, 60 fps, GPU encoder, desktop sound on, "
+                               "cursor hidden, replay buffer ready", icon="gamepad")
+        self.game_btn.clicked.connect(self.apply_game_preset)
+        h.addWidget(self.game_btn)
+        h.addSpacing(10)
 
-        self.monitor_box = QComboBox()
-        self._fill_monitors()
-        self.monitor_box.currentIndexChanged.connect(self._on_monitor)
-        h.addWidget(self.monitor_box)
+        # Quick sound toggles with live level meters.
+        self.spk_btn = tool_button("speaker", "Desktop sound on / off", 44)
+        self.spk_btn.setCheckable(True)
+        self.spk_meter = LevelMeter("desktop")
+        self.mic_btn = tool_button("mic", "Microphone on / off", 44)
+        self.mic_btn.setCheckable(True)
+        self.mic_meter = LevelMeter("mic")
+        self.spk_btn.toggled.connect(lambda on: self.set_audio("desktop_audio", on))
+        self.mic_btn.toggled.connect(lambda on: self.set_audio("mic", on))
+        for w in (self.spk_btn, self.spk_meter, self.mic_btn, self.mic_meter):
+            h.addWidget(w)
         h.addStretch(1)
 
         self.shot_btn = tool_button("camera", "Screenshot")
@@ -172,7 +189,26 @@ class MainWindow(QMainWindow):
         h.addWidget(self.pause_btn)
         h.addSpacing(4)
         h.addWidget(self.rec_btn)
-        return panel(h, (18, 10, 16, 10), tape=("tl",), seed=1)
+        self.collapse_btn = tool_button("chevron_up", "Make the window small (toolbar only)", 34)
+        self.collapse_btn.clicked.connect(lambda: self.set_compact(not self.s.compact))
+        h.addWidget(self.collapse_btn, 0, Qt.AlignTop)
+        outer.addLayout(h)
+
+        # Info bar: exactly what will be recorded.
+        info = QHBoxLayout()
+        info.setSpacing(8)
+        self.info_icon = icon_label("monitor", "accent", 16)
+        self.info_lbl = label("", "stat")
+        info.addWidget(self.info_icon)
+        info.addWidget(self.info_lbl, 1)
+        self.monitor_box = QComboBox()
+        self._fill_monitors()
+        self.monitor_box.currentIndexChanged.connect(self._on_monitor)
+        info.addWidget(self.monitor_box)
+        outer.addLayout(info)
+        self._sync_audio_widgets()
+        self._update_mode_ui()
+        return panel(outer, (18, 10, 14, 10), tape=("tl",), seed=1)
 
     def _build_status(self):
         h = QHBoxLayout()
@@ -219,8 +255,8 @@ class MainWindow(QMainWindow):
         for i, c in enumerate((self.q_desk, self.q_mic, self.q_cam, self.q_mouse)):
             grid.addWidget(c, i // 2, i % 2)
         v.addLayout(grid)
-        self.q_desk.toggled.connect(lambda on: self._set("desktop_audio", on, sync=self.a_desk))
-        self.q_mic.toggled.connect(lambda on: self._set("mic", on, sync=self.a_mic))
+        self.q_desk.toggled.connect(lambda on: self.set_audio("desktop_audio", on))
+        self.q_mic.toggled.connect(lambda on: self.set_audio("mic", on))
         self.q_cam.toggled.connect(self._on_webcam_toggle)
         self.q_mouse.toggled.connect(lambda on: self._set("draw_mouse", on))
 
@@ -308,7 +344,7 @@ class MainWindow(QMainWindow):
         desk, mics = sysinfo.audio_devices()
         v.addWidget(label("Desktop / game sound", "h2"))
         self.a_desk = toggle("Record what I hear", self.s.desktop_audio)
-        self.a_desk.toggled.connect(lambda on: self._set("desktop_audio", on, sync=self.q_desk))
+        self.a_desk.toggled.connect(lambda on: self.set_audio("desktop_audio", on))
         self.desk_box = self._device_box(desk, self.s.desktop_device, "desktop_device")
         dv = VolumeSlider(self.s.desktop_volume)
         dv.changed.connect(lambda x: self._set("desktop_volume", x))
@@ -322,7 +358,7 @@ class MainWindow(QMainWindow):
 
         v.addWidget(label("Microphone", "h2"))
         self.a_mic = toggle("Record my microphone", self.s.mic)
-        self.a_mic.toggled.connect(lambda on: self._set("mic", on, sync=self.q_mic))
+        self.a_mic.toggled.connect(lambda on: self.set_audio("mic", on))
         self.mic_box = self._device_box(mics, self.s.mic_device, "mic_device")
         mv = VolumeSlider(self.s.mic_volume)
         mv.changed.connect(lambda x: self._set("mic_volume", x))
@@ -332,6 +368,17 @@ class MainWindow(QMainWindow):
         refresh = button("Refresh devices", icon="refresh")
         refresh.clicked.connect(self._refresh_audio)
         v.addLayout(row(refresh))
+
+        v.addWidget(label("Audio only mode", "h2"))
+        fmt = QComboBox()
+        fmt.addItem("M4A (good quality, small)", "m4a")
+        fmt.addItem("MP3 (plays everywhere)", "mp3")
+        fmt.setCurrentIndex(max(0, fmt.findData(self.s.audio_format)))
+        fmt.currentIndexChanged.connect(lambda _: (self._set("audio_format", fmt.currentData()),
+                                                   self._update_mode_ui()))
+        v.addLayout(row(label("Save sound as"), fmt))
+        v.addWidget(label("Pick 'Audio only' from the mode menu at the top to record just sound, no video.",
+                          "hint", wrap=True))
         v.addStretch(1)
         return w
 
@@ -342,7 +389,7 @@ class MainWindow(QMainWindow):
             b.addItem(d.name, d.id)
         i = b.findData(current)
         b.setCurrentIndex(max(0, i))
-        b.currentIndexChanged.connect(lambda _: self._set(key, b.currentData()))
+        b.currentIndexChanged.connect(lambda _: (self._set(key, b.currentData()), self._restart_meters()))
         return b
 
     def _refresh_audio(self):
@@ -761,31 +808,212 @@ class MainWindow(QMainWindow):
         self._update_hotkey_hint()
 
     # ======================================================== mode / target
-    def _on_mode(self, i):
-        key = self.mode_group.button(i).property("key")
-        if key == "region":
-            self._set("mode", "region")
-            self.pick_region()
-        elif key == "window":
+    MODE_LABELS = {
+        "region": ("Select area", "region"),
+        "rect": ("Rectangle", "rect"),
+        "fullscreen": ("Fullscreen", "monitor"),
+        "window": ("Window", "window"),
+        "mouse": ("Around mouse", "mouse_area"),
+        "audio": ("Audio only", "audio"),
+    }
+    SIZES = [(1920, 1080), (1280, 720), (854, 480), (640, 360), (1080, 1080), (720, 720),
+             (1080, 1920), (720, 1280)]
+
+    @staticmethod
+    def _size_name(w, h):
+        tag = " (square)" if w == h else (" (vertical)" if h > w else "")
+        return f"{w} x {h}{tag}"
+
+    def _show_mode_menu(self):
+        """Rebuilt each time it opens, so monitors and sizes are always current."""
+        tc = self.theme.text
+        m = self.mode_menu
+        m.clear()
+        a = m.addAction(icons.icon("region", tc), "Select a recording area",
+                        lambda: self._set_mode("region"))
+        rect = m.addMenu(icons.icon("rect", tc), "Rectangle on a screen")
+        for w, h in self.SIZES:
+            rect.addAction(self._size_name(w, h), lambda w=w, h=h: self._set_mode("rect", size=(w, h)))
+        full = m.addMenu(icons.icon("monitor", tc), "Fullscreen")
+        for i in range(self.monitor_box.count()):
+            full.addAction(self.monitor_box.itemText(i), lambda i=i: self._set_mode("fullscreen", monitor=i))
+        m.addAction(icons.icon("window", tc), "Specific window", lambda: self._set_mode("window"))
+        mouse = m.addMenu(icons.icon("mouse_area", tc), "Around mouse")
+        for w, h in self.SIZES[:6]:
+            mouse.addAction(self._size_name(w, h), lambda w=w, h=h: self._set_mode("mouse", size=(w, h)))
+        if self.session != "x11":
+            mouse.setEnabled(False)
+            mouse.setToolTip("Only works in a Linux X11 session (like Linux Mint).")
+            m.setToolTipsVisible(True)
+        m.addSeparator()
+        m.addAction(icons.icon("audio", tc), "Audio only", lambda: self._set_mode("audio"))
+        del a
+
+    def _set_mode(self, mode, size=None, monitor=None):
+        if mode == "region":
+            self.pick_region()  # sets the mode once an area is chosen
+            return
+        if mode == "rect":
+            self.pick_region(fixed=size)
+            return
+        if mode == "window":
             self._set("mode", "window")
             self.pick_window()
-        else:
+        elif mode == "fullscreen":
+            if monitor is not None:
+                self.monitor_box.setCurrentIndex(monitor)
             self._set("mode", "fullscreen")
+        elif mode == "mouse":
+            self._set("mouse_size", list(size))
+            self._set("mode", "mouse")
+        elif mode == "audio":
+            self._set("mode", "audio")
+            if not (self.s.desktop_audio or self.s.mic):
+                self.set_audio("desktop_audio", True)
+            self._notify("Audio only: records desktop sound and/or mic, no video.")
+        self._update_mode_ui()
+
+    def _update_mode_ui(self):
+        """Mode button text/icon + the info bar describing exactly what gets recorded."""
+        mode = self.s.mode if self.s.mode in self.MODE_LABELS else "fullscreen"
+        text, ic = self.MODE_LABELS[mode]
+        self.mode_btn.setText(text)
+        icons.bind(self.mode_btn, ic, "plain", 18)
+        icons.bind(self.info_icon, ic, "accent", 16)
+        screens = QGuiApplication.screens()
+
+        def screen_desc(i):
+            i = max(0, min(i, len(screens) - 1))
+            g = screens[i].geometry()
+            dpr = screens[i].devicePixelRatio()
+            return i, round(g.width() * dpr), round(g.height() * dpr)
+
+        if mode in ("region", "rect") and self.s.region:
+            r = self.s.region
+            i, _, _ = screen_desc(r.get("screen", 0))
+            txt = (f"{r['w']}x{r['h']} - ({r['x']}, {r['y']}), ({r['x'] + r['w']}, {r['y'] + r['h']})"
+                   f" - Display {i + 1}")
+        elif mode == "window":
+            txt = f"Window: {self.s.window_title}" if self.s.window_title else "Window: pick one when you press REC"
+        elif mode == "mouse":
+            w, h = self.s.mouse_size
+            txt = f"{w}x{h} box that follows the mouse"
+        elif mode == "audio":
+            src = [n for n, on in (("desktop sound", self.s.desktop_audio), ("microphone", self.s.mic)) if on]
+            txt = f"Audio only - {' + '.join(src) if src else 'turn on sound or mic'} - .{self.s.audio_format}"
+        else:
+            i, w, h = screen_desc(self.s.monitor)
+            txt = f"{w}x{h} - (0, 0), ({w}, {h}) - Display {i + 1}"
+            if self.session == "wayland":
+                txt = "Fullscreen - you pick the screen in the system's share dialog"
+        self.info_lbl.setText(txt)
+        self.monitor_box.setVisible(mode == "fullscreen")
+
+    def apply_game_preset(self):
+        """One click to the best settings for recording games."""
+        self._set("mode", "fullscreen")
+        self.preset_box.setCurrentIndex(self.preset_box.findData("gaming"))  # 60 fps, balanced
+        self.enc_box.setCurrentIndex(0)  # auto = best GPU encoder found
+        self.set_audio("desktop_audio", True)
+        self.q_mouse.setChecked(False)
+        if not self.rb_toggle.isChecked():
+            self.rb_toggle.setChecked(True)  # replay buffer: F10 saves the last moments
+        self._update_mode_ui()
+        hk = pynput_to_qt(self.s.hotkeys.get("replay", ""))
+        self._notify(f"Game preset on: fullscreen, 60 fps, GPU encoder, game sound, no cursor. "
+                     f"Replay buffer running ({hk} saves the last {self.s.replay_seconds} s).")
+
+    # ---- sound toggles (toolbar, Home page and Audio page stay in sync) ----
+    def set_audio(self, key, on):
+        self._set(key, on)
+        self._sync_audio_widgets()
+        self._restart_meters()
+        if self.s.mode == "audio":
+            self._update_mode_ui()
+
+    def _sync_audio_widgets(self):
+        pairs = (("desktop_audio", ("spk_btn", "q_desk", "a_desk"), "speaker"),
+                 ("mic", ("mic_btn", "q_mic", "a_mic"), "mic"))
+        for key, names, ic in pairs:
+            on = getattr(self.s, key)
+            for n in names:
+                w = getattr(self, n, None)
+                if w is not None and w.isChecked() != on:
+                    w.blockSignals(True)
+                    w.setChecked(on)
+                    w.blockSignals(False)
+            btn = getattr(self, names[0], None)
+            if btn is not None:
+                icons.bind(btn, ic if on else ic + "_off", "plain", 22)
+
+    def _restart_meters(self):
+        if not hasattr(self, "spk_meter"):
+            return
+        visible = self.isVisible() and not self.isMinimized()
+        for meter, on, dev in ((self.spk_meter, self.s.desktop_audio, self.s.desktop_device),
+                               (self.mic_meter, self.s.mic, self.s.mic_device)):
+            if visible and on:
+                meter.start(dev)
+            else:
+                meter.stop()
+                meter.setVisible(True)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        QTimer.singleShot(300, self._restart_meters)
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self._restart_meters()  # window hidden: meters stop, nothing keeps the mic open
 
     def _on_monitor(self, i):
         self._set("monitor", max(0, i))
+        self._update_mode_ui()
 
-    def pick_region(self):
+    # ---- mini mode: just the toolbar strip ----
+    FULL_MIN = (980, 640)
+
+    def set_compact(self, on: bool):
+        self._set("compact", on)
+        if on:
+            if not self.isMaximized() and self.height() > 300:
+                self._full_size = self.size()
+            self.showNormal() if self.isMaximized() else None
+            for w in (self.body_w, self.status_panel, self.name_box):
+                w.hide()
+            self.setMinimumSize(0, 0)
+            icons.bind(self.collapse_btn, "chevron_down", "plain", 20)
+            self.collapse_btn.setToolTip("Show the full window")
+            QTimer.singleShot(0, self._shrink_to_strip)
+        else:
+            for w in (self.body_w, self.status_panel, self.name_box):
+                w.show()
+            self.setMinimumSize(*self.FULL_MIN)
+            icons.bind(self.collapse_btn, "chevron_up", "plain", 20)
+            self.collapse_btn.setToolTip("Make the window small (toolbar only)")
+            size = getattr(self, "_full_size", None)
+            self.resize(size if size else self.sizeHint().expandedTo(self.minimumSize()))
+
+    def _shrink_to_strip(self):
+        hint = self.centralWidget().layout().minimumSize()
+        self.resize(max(hint.width(), 760), hint.height())
+
+    def pick_region(self, fixed=None):
         self.hide()
-        sel = RegionSelector(self.s.monitor, self.theme.accent)
-        sel.chosen.connect(self._on_region)
+        idx = self.s.region.get("screen", self.s.monitor) if self.s.region else self.s.monitor
+        sel = RegionSelector(idx, self.theme.accent, fixed=fixed)
+        sel.chosen.connect(lambda r: self._on_region(r, "rect" if fixed else "region", fixed))
         sel.cancelled.connect(self.bring_up)
         QTimer.singleShot(200, sel.go)  # let our window disappear first
         self._selector = sel
 
-    def _on_region(self, r):
+    def _on_region(self, r, mode="region", fixed=None):
         self._set("region", r)
-        self._notify(f"Region set: {r['w']}×{r['h']}")
+        if fixed:
+            self._set("rect_size", list(fixed))
+        self._set("mode", mode)
+        self._update_mode_ui()
+        self._notify(f"Area set: {r['w']} x {r['h']}")
         self.bring_up()
 
     def pick_window(self):
@@ -808,11 +1036,12 @@ class MainWindow(QMainWindow):
                 if title == self.windowTitle():
                     continue
                 m.addAction(title[:80], lambda t=title: self._on_window_picked(t, t))
-            m.exec(self.mode_group.button(2).mapToGlobal(self.mode_group.button(2).rect().bottomLeft()))
+            m.exec(self.mode_btn.mapToGlobal(self.mode_btn.rect().bottomLeft()))
 
     def _on_window_picked(self, wid, title):
         self._set("window_id", wid)
         self._set("window_title", title)
+        self._update_mode_ui()
         self._notify(f"Recording window: {title}")
 
     # ======================================================== recording
@@ -828,9 +1057,8 @@ class MainWindow(QMainWindow):
         self.rec_btn.set_recording(rec)
         self.pause_btn.setEnabled(rec)
         icons.bind(self.pause_btn, "play" if st == "paused" else "pause", "plain", 22)
-        for b in self.mode_group.buttons():
+        for b in (self.mode_btn, self.game_btn, self.monitor_box, self.spk_btn, self.mic_btn):
             b.setEnabled(st == "idle")
-        self.monitor_box.setEnabled(st == "idle")
         texts = {
             "idle": ("READY", "tile_ok", "Ready to record."),
             "starting": ("STARTING", "tile_busy",
@@ -871,7 +1099,7 @@ class MainWindow(QMainWindow):
 
     def _sync_hud(self):
         if self.s.hud and self.recorder.state in ("recording", "paused"):
-            self.hud.place(self.s.region.get("screen", 0) if self.s.mode == "region" and self.s.region
+            self.hud.place(self.s.region.get("screen", 0) if self.s.mode in ("region", "rect") and self.s.region
                            else self.s.monitor)
             self.hud.show()
         else:
@@ -945,7 +1173,7 @@ class MainWindow(QMainWindow):
             threading.Thread(target=work, daemon=True).start()
             return
         screens = QGuiApplication.screens()
-        region = self.s.region if self.s.mode == "region" and self.s.region else None
+        region = self.s.region if self.s.mode in ("region", "rect") and self.s.region else None
         idx = region.get("screen", 0) if region else self.s.monitor
         scr = screens[max(0, min(idx, len(screens) - 1))]
         pm = scr.grabWindow(0)
@@ -960,7 +1188,7 @@ class MainWindow(QMainWindow):
     def refresh_recordings(self):
         self.rec_list.clear()
         d = self.s.video_dir()
-        files = sorted([p for p in d.glob("*") if p.suffix.lower() in (".mp4", ".mkv")],
+        files = sorted([p for p in d.glob("*") if p.suffix.lower() in (".mp4", ".mkv", ".m4a", ".mp3")],
                        key=lambda p: p.stat().st_mtime, reverse=True)
         thumbs = paths.cache_dir() / "thumbs"
         thumbs.mkdir(exist_ok=True)
@@ -974,6 +1202,14 @@ class MainWindow(QMainWindow):
             it.setData(Qt.UserRole, str(f))
             it.setToolTip(str(f))
             self.rec_list.addItem(it)
+            if f.suffix.lower() in (".m4a", ".mp3"):  # audio: a speaker card instead of a frame
+                card = QPixmap(208, 117)
+                card.fill(QColor(self.theme.accent).darker(260))
+                pa = QPainter(card)
+                pa.drawPixmap(80, 34, icons.pixmap("audio", self.theme.accent, 48, 1.0))
+                pa.end()
+                it.setIcon(QIcon(card))
+                continue
             png = thumbs / f"{f.stem}_{int(st.st_mtime)}.png"
             if png.exists():
                 it.setIcon(QIcon(str(png)))

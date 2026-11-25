@@ -3,3 +3,6 @@ __pycache__/
 .venv*/
 build/
 dist/
+
+# Windows test build: local only, not published
+packaging/build_windows.ps1

@@ -1,6 +1,5 @@
-# Builds the Linux AppImage (and the Windows test zip) on GitHub's machines.
-# Push this folder to a GitHub repo, open the Actions tab, run "Build KalciCam",
-# and download the files from the run's Artifacts section.
+# Builds the Linux AppImage on GitHub's machines, records a short test video
+# with it, and (for version tags) publishes it on the Releases page.
 name: Build KalciCam
 
 on:
@@ -39,29 +38,16 @@ jobs:
           name: KalciCam-Linux-AppImage
           path: dist/KalciCam-x86_64.AppImage
 
-  windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Build
-        shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
-      - uses: actions/upload-artifact@v4
-        with:
-          name: KalciCam-Windows-Test
-          path: dist/KalciCam-Windows-Test.zip
-
-  # Pushing a tag like v1.0.0 publishes both builds on the repo's Releases page.
+  # Pushing a tag like v1.1.0 publishes the AppImage on the Releases page,
+  # but only if the build and the real recording test above passed.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows]
+    needs: [linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: files
@@ -73,6 +59,4 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" files/* \
             --repo "${GITHUB_REPOSITORY}" \
             --title "KalciCam ${GITHUB_REF_NAME}" \
-            --notes "**Linux:** download KalciCam-x86_64.AppImage, right-click > Properties > Allow executing as program, then double-click it. The setup wizard does the rest.
-
-          **Windows (test build):** unzip KalciCam-Windows-Test.zip and run KalciCam.exe (needs FFmpeg: winget install Gyan.FFmpeg)."
+            --notes-file .github/release-notes.md

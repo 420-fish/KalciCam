@@ -258,12 +258,16 @@ class WebcamBubble(QWidget):
 # ---------------- region selector ----------------
 
 class RegionSelector(QWidget):
-    """Full-screen dimmed overlay: drag to choose the area to record."""
+    """Full-screen dimmed overlay: drag to choose the area to record.
+
+    With `fixed=(w, h)` (physical px) it's "Rectangle on a screen": a frame of that
+    exact size follows the mouse and a click drops it in place.
+    """
 
     chosen = Signal(dict)  # {screen, x, y, w, h} in physical pixels, relative to that screen
     cancelled = Signal()
 
-    def __init__(self, screen_idx: int, accent: str):
+    def __init__(self, screen_idx: int, accent: str, fixed=None):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_DeleteOnClose)
@@ -273,6 +277,15 @@ class RegionSelector(QWidget):
         self.scr = screens[self.idx]
         self.accent = QColor(accent)
         self.a = self.b = None
+        self.fixed = None
+        self.cursor = None
+        if fixed:
+            dpr = self.scr.devicePixelRatio()
+            g = self.scr.geometry()
+            # never bigger than the screen
+            self.fixed = (min(fixed[0] / dpr, g.width()), min(fixed[1] / dpr, g.height()))
+            self.setMouseTracking(True)
+            self.setCursor(Qt.SizeAllCursor)
         self.setGeometry(self.scr.geometry())
 
     def go(self):
@@ -280,8 +293,18 @@ class RegionSelector(QWidget):
         self.showFullScreen()
         self.activateWindow()
         self.setFocus()
+        if self.fixed:  # show the frame straight away, under the mouse
+            self.cursor = self.mapFromGlobal(QCursor.pos())
+            self.update()
 
     def _rect(self) -> QRect:
+        if self.fixed:
+            if self.cursor is None:
+                return QRect()
+            w, h = int(self.fixed[0]), int(self.fixed[1])
+            x = max(0, min(self.cursor.x() - w // 2, self.width() - w))
+            y = max(0, min(self.cursor.y() - h // 2, self.height() - h))
+            return QRect(x, y, w, h)
         return QRect(self.a, self.b).normalized() if self.a and self.b else QRect()
 
     def paintEvent(self, _):
@@ -303,8 +326,12 @@ class RegionSelector(QWidget):
         if r.isEmpty():
             p.setPen(QColor("white"))
             p.drawText(self.rect(), Qt.AlignCenter,
+                       "Move the mouse to place the frame, click to drop it\nEsc = cancel" if self.fixed else
                        "Drag to pick the area to record\nEnter = use whole screen · Esc = cancel")
             return
+        if self.fixed:
+            p.setPen(QColor("white"))
+            p.drawText(QRectF(0, 20, self.width(), 30), Qt.AlignCenter, "Click to place  ·  Esc = cancel")
         p.setPen(QPen(self.accent, 3, Qt.DashLine))
         p.setBrush(Qt.NoBrush)
         p.drawRect(r)
@@ -322,15 +349,25 @@ class RegionSelector(QWidget):
         if e.button() == Qt.RightButton:
             self._cancel()
             return
+        if self.fixed:
+            self.cursor = e.position().toPoint()
+            self._accept(self._rect())
+            return
         self.a = self.b = e.position().toPoint()
         self.update()
 
     def mouseMoveEvent(self, e):
+        if self.fixed:
+            self.cursor = e.position().toPoint()
+            self.update()
+            return
         if self.a:
             self.b = e.position().toPoint()
             self.update()
 
     def mouseReleaseEvent(self, _):
+        if self.fixed:
+            return
         r = self._rect()
         if r.width() > 16 and r.height() > 16:
             self._accept(r)
@@ -342,8 +379,12 @@ class RegionSelector(QWidget):
             self._accept(self._rect() if not self._rect().isEmpty() else self.rect())
 
     def _accept(self, r: QRect):
+        if r.isEmpty():
+            return
         dpr = self.scr.devicePixelRatio()
         w, h = round(r.width() * dpr), round(r.height() * dpr)
+        if self.fixed:  # keep the exact size that was picked
+            w, h = round(self.fixed[0] * dpr), round(self.fixed[1] * dpr)
         self.chosen.emit({"screen": self.idx, "x": round(r.x() * dpr), "y": round(r.y() * dpr),
                           "w": w - w % 2, "h": h - h % 2})
         self.close()

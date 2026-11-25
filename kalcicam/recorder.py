@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QCursor, QGuiApplication
 
 from . import capture, encoders, paths, sysinfo
 from .config import Settings
@@ -122,6 +122,9 @@ class Runner:
         self.started = time.monotonic()
         self.stopping = False
         self.err_tail: list[str] = []
+        # Set once ffmpeg has actually written something (devices can take a
+        # second to open) or the process has ended.
+        self.ready = threading.Event()
         kw = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                   creationflags=paths.no_window_flags())
         if job.pass_fds:
@@ -144,6 +147,12 @@ class Runner:
     def _read_out(self):
         for raw in self.proc.stdout:
             line = raw.decode(errors="ignore").strip()
+            if line.startswith("out_time_us=") and not self.ready.is_set():
+                try:
+                    if int(line[12:] or 0) > 0:
+                        self.ready.set()
+                except ValueError:
+                    pass
             if line.startswith("fps="):
                 try:
                     self.fps = float(line[4:])
@@ -158,6 +167,7 @@ class Runner:
 
     def _wait(self):
         code = self.proc.wait()
+        self.ready.set()
         time.sleep(0.1)  # let the stderr reader catch the last lines
         log(f"exit {code} after {time.monotonic() - self.started:.1f}s"
             + ("" if self.stopping else " (unexpected)") + "\n    " + "\n    ".join(self.err_tail))
@@ -235,7 +245,8 @@ def screen_target(s: Settings) -> dict:
     st = sysinfo.session_type()
     if not screens:
         return {}
-    region = s.region if (s.mode == "region" and s.region) else None
+    # "Select area" and "Rectangle on a screen" both record a saved region.
+    region = s.region if (s.mode in ("region", "rect") and s.region) else None
     idx = region.get("screen", 0) if region else s.monitor
     idx = max(0, min(idx, len(screens) - 1))
     scr = screens[idx]
@@ -254,6 +265,15 @@ def screen_target(s: Settings) -> dict:
         if s.mode == "window" and s.window_id:
             return {"window_id": s.window_id, "pixels": pixels}
         ox, oy = round(g.x() * dpr), round(g.y() * dpr)
+        if s.mode == "mouse":
+            # A box that follows the cursor; start it centred on where the mouse is now.
+            w = min(int(s.mouse_size[0]), phys_w)
+            h = min(int(s.mouse_size[1]), phys_h)
+            cur = QCursor.pos()
+            cx, cy = round(cur.x() * dpr), round(cur.y() * dpr)
+            x = max(ox, min(cx - w // 2, ox + phys_w - w))
+            y = max(oy, min(cy - h // 2, oy + phys_h - h))
+            return {"x": x, "y": y, "w": w, "h": h, "follow": True}
         if region:
             return {"x": ox + region["x"], "y": oy + region["y"], "w": region["w"], "h": region["h"]}
         return {"x": ox, "y": oy, "w": phys_w, "h": phys_h}
@@ -333,6 +353,7 @@ class Recorder(QObject):
         self.parts: list[str] = []
         self.work: Path | None = None
         self.name = ""
+        self._audio_only = False
         self._target = {}
         self._t0 = 0.0
         self._paused_total = 0.0
@@ -370,7 +391,11 @@ class Recorder(QObject):
         if not paths.ffmpeg() and encoders.backend() != "gst":
             self.error.emit("FFmpeg isn't installed. Open Settings > Run setup again.")
             return
-        self.name = "KalciCam_" + stamp()
+        self._audio_only = self.s.mode == "audio"
+        if self._audio_only and not capture._audio_sources(self.s):
+            self.error.emit("Audio only mode needs sound: turn on desktop sound or the microphone.")
+            return
+        self.name = ("KalciCam_Audio_" if self._audio_only else "KalciCam_") + stamp()
         self.work = self.s.video_dir() / f".{self.name}_parts"
         self.work.mkdir(parents=True, exist_ok=True)
         self.parts = []
@@ -378,7 +403,7 @@ class Recorder(QObject):
         self._fallback_tried = False
         self._target = screen_target(self.s)
         self._gdi_target = None
-        if encoders.backend() == "ffmpeg_win":
+        if encoders.backend() == "ffmpeg_win" and not self._audio_only:
             # Worked out now on the UI thread, in case GPU capture fails and we fall back.
             old = self.s.win_capture_engine
             self.s.win_capture_engine = "gdigrab"
@@ -390,13 +415,18 @@ class Recorder(QObject):
     def _start_piece(self, first: bool):
         try:
             target = self._target
-            if encoders.backend() == "gst":
+            if encoders.backend() == "gst" and not self._audio_only:
                 target = WAYLAND.ensure(self.s, target)
-            part = str(self.work / f"part{len(self.parts):03d}.mkv")
+            part = str(self.work / f"part{len(self.parts):03d}{'.mka' if self._audio_only else '.mkv'}")
             job = capture.build_job(self.s, target, part)
             with self._lock:
                 self.runner = Runner(job, on_exit=self._on_exit)
                 self.parts.append(part)
+            if job.stop == "q":
+                # Show REC (and start the clock) only once ffmpeg is really capturing.
+                self.runner.ready.wait(8)
+                if not self.runner.alive():
+                    return  # _on_exit reports what went wrong
             if first:
                 self._t0 = time.monotonic()
             else:
@@ -467,7 +497,10 @@ class Recorder(QObject):
             self.runner.stop()
         parts = [p for p in self.parts if os.path.exists(p) and os.path.getsize(p) > 1024]
         out_dir = self.s.video_dir()
-        ext = ".mp4" if self.s.final_format == "mp4" else ".mkv"
+        if self._audio_only:
+            ext = capture.AUDIO_FORMATS.get(self.s.audio_format, capture.AUDIO_FORMATS["m4a"])[0]
+        else:
+            ext = ".mp4" if self.s.final_format == "mp4" else ".mkv"
         final = str(out_dir / (self.name + ext))
         ok = False
         if len(parts) == 1:
@@ -513,13 +546,14 @@ class Recorder(QObject):
                 if self.work and parts_dir == self.work:
                     continue
                 name = parts_dir.name[1:-len("_parts")]
-                parts = sorted(p for p in parts_dir.glob("part*.mkv") if p.stat().st_size > 1024)
+                parts = sorted(p for p in parts_dir.glob("part*.mk*") if p.stat().st_size > 1024)
                 if not parts:
                     shutil.rmtree(parts_dir, ignore_errors=True)
                     continue
                 lst = parts_dir / "list.txt"
                 lst.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts), encoding="utf-8")
-                final = str(d / f"{name}_recovered.mp4")
+                audio = parts[0].suffix == ".mka"
+                final = str(d / f"{name}_recovered{'.mka' if audio else '.mp4'}")
                 if run_quiet(capture.concat_cmd(str(lst), final)):
                     shutil.rmtree(parts_dir, ignore_errors=True)
                     log(f"recovered {final}")
