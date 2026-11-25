@@ -14,8 +14,12 @@ if IS_WIN:
 else:
     # pynput picks its backend at runtime and python-xlib loads its X extensions with
     # __import__, so PyInstaller can't see them: without these, global hotkeys die
-    # silently in the AppImage.
-    hidden += collect_submodules("pynput") + collect_submodules("Xlib")
+    # silently in the AppImage. pynput's modules are listed by name because
+    # collect_submodules("pynput") has to import it, which needs an X display that
+    # the build machine doesn't have (it then silently collects nothing).
+    hidden += ["pynput.keyboard._xorg", "pynput.mouse._xorg", "pynput._util.xorg",
+               "pynput._util.xorg_keysyms"]
+    hidden += collect_submodules("Xlib")  # imports fine without a display
     hidden += ["dbus_fast", "dbus_fast.aio"]
 
 # Big Qt parts KalciCam never uses: leaving them out keeps the download small.
