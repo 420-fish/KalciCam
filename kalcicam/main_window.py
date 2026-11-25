@@ -6,8 +6,9 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap
+from PySide6.QtCore import QObject, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QKeySequence, QPainter, QPen,
+                           QPixmap)
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QFileDialog, QGridLayout, QHBoxLayout,
                                QKeySequenceEdit, QLabel, QListWidget, QListWidgetItem, QMainWindow, QMenu,
                                QMessageBox, QScrollArea, QSpinBox, QStackedWidget, QSystemTrayIcon,
@@ -378,11 +379,17 @@ class MainWindow(QMainWindow):
                           "Drag it anywhere, right-click to hide.", "hint", wrap=True))
 
         v.addWidget(label("Recording HUD", "h2"))
-        hud = toggle("Show the REC timer + FPS badge while recording", self.s.hud)
+        if paths.IS_WINDOWS:
+            hud = toggle("Show the REC timer + FPS badge while recording", self.s.hud)
+            hint = "You see the badge, but it's kept out of the video."
+        else:
+            hud = toggle("Also show a floating REC badge on screen (it WILL appear in the video)", self.s.hud)
+            hint = ("While recording, the KalciCam tray icon turns into a red dot (yellow when paused). "
+                    "Hover over it to see the timer. Linux doesn't let apps hide a window from a screen "
+                    "recording, so the floating badge is off unless you want it in your videos.")
         hud.toggled.connect(lambda on: self._set("hud", on, after=self._sync_hud))
         v.addWidget(hud)
-        v.addWidget(label("On Windows the badge is hidden from the video. On Linux it shows up in the recording, "
-                          "so turn it off if you don't want it there.", "hint", wrap=True))
+        v.addWidget(label(hint, "hint", wrap=True))
 
         v.addWidget(label("Click highlights", "h2"))
         ch = toggle("Show a ripple where I click", self.s.click_highlight)
@@ -562,17 +569,47 @@ class MainWindow(QMainWindow):
         self.tray.activated.connect(lambda r: self.bring_up() if r == QSystemTrayIcon.Trigger else None)
         self.tray.show()
 
-    def _tray_icon(self, recording: bool) -> QIcon:
-        if not recording:
+    def _tray_icon(self, state: str) -> QIcon:
+        """Tray icon per state. While recording it's a bold red dot (yellow pause bars
+        when paused) so it reads clearly at panel size. The tray lives outside the
+        captured picture in fullscreen apps, unlike an on-screen badge."""
+        if state not in ("recording", "paused"):
             return app_icon()
-        pm = app_icon().pixmap(64, 64)
-        p = QPainter(pm)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setBrush(QColor(self.theme.rec))
-        p.setPen(QColor("white"))
-        p.drawEllipse(36, 36, 26, 26)
-        p.end()
-        return QIcon(pm)
+        ic = QIcon()
+        for size in (16, 22, 24, 32, 48, 64):
+            pm = QPixmap(size, size)
+            pm.fill(Qt.transparent)
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.Antialiasing)
+            m = size * 0.06
+            ring = max(1.0, size / 16)
+            if state == "recording":
+                p.setBrush(QColor(self.theme.rec))
+                p.setPen(QPen(QColor("white"), ring))
+                p.drawEllipse(QRectF(m, m, size - 2 * m, size - 2 * m))
+            else:
+                p.setBrush(QColor("#ffcc33"))
+                p.setPen(QPen(QColor("black"), ring))
+                p.drawEllipse(QRectF(m, m, size - 2 * m, size - 2 * m))
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor("black"))
+                bw, bh = size * 0.13, size * 0.42
+                p.drawRect(QRectF(size * 0.33, (size - bh) / 2, bw, bh))
+                p.drawRect(QRectF(size * 0.54, (size - bh) / 2, bw, bh))
+            p.end()
+            ic.addPixmap(pm)
+        return ic
+
+    def _update_tray_tooltip(self, elapsed: float = 0.0):
+        if not self.tray:
+            return
+        st = self.recorder.state
+        if st == "recording":
+            self.tray.setToolTip(f"{APP_NAME} - REC {hms(elapsed)}")
+        elif st == "paused":
+            self.tray.setToolTip(f"{APP_NAME} - PAUSED {hms(elapsed)}")
+        else:
+            self.tray.setToolTip(APP_NAME)
 
     # ======================================================== theme
     def apply_theme(self, t: themes.Theme):
@@ -809,7 +846,8 @@ class MainWindow(QMainWindow):
         self.st_state.style().polish(self.st_state)
         self.state_lbl.setText(long)
         if self.tray:
-            self.tray.setIcon(self._tray_icon(rec))
+            self.tray.setIcon(self._tray_icon(st))
+            self._update_tray_tooltip(self.recorder.elapsed())
             self.t_rec.setText("Stop recording" if rec else "Start recording")
             icons.bind(self.t_rec, "stop" if rec else "rec", "plain", 16)
             self.t_pause.setEnabled(rec)
@@ -849,6 +887,7 @@ class MainWindow(QMainWindow):
         self.st_size.setText(human_size(self.recorder.size_bytes()))
         if self.hud.isVisible():
             self.hud.update_info(el, fps, self.recorder.state == "paused")
+        self._update_tray_tooltip(el)
 
     def _on_saved(self, path):
         self._last_saved = path

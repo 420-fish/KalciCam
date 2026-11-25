@@ -15,6 +15,9 @@ PRESETS = {
 # Constant-quality value per quality level (lower = better / bigger file).
 QUALITY_QP = {"high": 18, "balanced": 23, "small": 28}
 
+# Bump when an update needs to change saved settings (see _migrate).
+SETTINGS_REV = 1
+
 DEFAULT_HOTKEYS = {
     "record": "<f12>",
     "pause": "<shift>+<f12>",
@@ -60,7 +63,7 @@ class Settings:
     webcam: bool = False
     webcam_device: str = ""
     webcam_size: int = 220
-    hud: bool = True
+    hud: bool = paths.IS_WINDOWS  # Linux can't keep the badge out of the video, so it's off there
     click_highlight: bool = False
     # Extras
     hotkeys: dict = field(default_factory=lambda: dict(DEFAULT_HOTKEYS))
@@ -68,6 +71,7 @@ class Settings:
     replay_seconds: int = 30
     minimize_to_tray: bool = True
     wayland_restore_token: str = ""
+    settings_rev: int = SETTINGS_REV
 
     def video_dir(self):
         from pathlib import Path
@@ -80,6 +84,15 @@ class Settings:
         if name in PRESETS:
             self.preset = name
             self.fps, self.quality = PRESETS[name]
+
+
+def _migrate(s: Settings, data: dict):
+    rev = data.get("settings_rev", 0)
+    if rev < 1 and paths.IS_LINUX:
+        # 1.0.3: the floating REC badge is captured on Linux, so turn it off;
+        # the tray icon shows recording state instead.
+        s.hud = False
+    s.settings_rev = SETTINGS_REV
 
 
 def _path():
@@ -97,6 +110,7 @@ def load() -> Settings:
         # Fill in any hotkeys added in newer versions.
         for k, v in DEFAULT_HOTKEYS.items():
             s.hotkeys.setdefault(k, v)
+        _migrate(s, data)
     except FileNotFoundError:
         pass
     except Exception as e:  # corrupt file: keep defaults, but don't crash
