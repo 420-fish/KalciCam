@@ -23,8 +23,20 @@ def _parse(argv):
     return p.parse_args(argv)
 
 
+def _preload_pynput():
+    """Import pynput BEFORE Qt. PySide6 installs an import hook that breaks the
+    `six` helper pynput uses ('_SixMetaPathImporter' has no '_path') if pynput is
+    imported afterwards, which silently killed the global hotkeys."""
+    try:
+        import pynput.keyboard  # noqa: F401
+        import pynput.mouse  # noqa: F401
+    except Exception:
+        pass  # e.g. no display; GlobalHotkeys reports the real reason later
+
+
 def main(argv=None):
     paths.clean_environment()
+    _preload_pynput()
     args = _parse(sys.argv[1:] if argv is None else argv)
     cmd = next((c for c in ("toggle", "pause", "screenshot", "replay", "show") if getattr(args, c)), None)
 

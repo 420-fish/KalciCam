@@ -212,4 +212,16 @@ QMenu::item {{ padding: 7px 20px 7px 10px; font-weight: 600; }}
 QMenu::item:selected {{ background: {t.accent}; color: {t.on_accent}; }}
 QMenu::separator {{ height: 2px; background: {border}; margin: 4px 6px; }}
 QMessageBox QLabel {{ font-size: 12pt; }}
+QFrame#section {{ background: {'rgba(255,255,255,120)' if t.light else 'rgba(0,0,0,70)'};
+    border: 1px solid {_rgba(t.accent, 0.25)}; border-left: 4px solid {t.accent}; }}
+QFrame#banner {{ background: {_rgba(t.rec, 0.18)}; border: 2px solid {t.rec}; }}
+QFrame#tile {{ background: {'rgba(255,255,255,140)' if t.light else 'rgba(0,0,0,90)'};
+    border: 2px solid {_rgba(t.accent, 0.35)}; }}
+QLabel#tilenum {{ font-family: "{HEAD}"; font-size: 20pt; color: {t.accent}; }}
+QLabel#toast {{ font-size: 12pt; font-weight: 600; padding: 12px 18px; color: {t.on_accent};
+    background: {t.accent}; border: 2px solid {t.text}; }}
+QLabel#toast[kind="error"] {{ background: {t.rec}; color: white; }}
+QLabel#empty {{ color: {t.sub}; font-size: 13pt; padding: 40px; }}
+QLabel#hk_ok {{ color: {t.accent}; font-weight: 700; }}
+QLabel#hk_bad {{ color: {t.rec}; font-weight: 700; }}
 """

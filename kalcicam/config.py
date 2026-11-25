@@ -71,6 +71,9 @@ class Settings:
     click_highlight: bool = False
     # Extras
     hotkeys: dict = field(default_factory=lambda: dict(DEFAULT_HOTKEYS))
+    hotkeys_system: bool = False  # keys handled by desktop shortcuts instead of KalciCam's own listener
+    countdown: int = 3  # seconds of 3-2-1 before recording (0 = start right away)
+    sounds: bool = True  # little click when recording starts / stops
     replay_enabled: bool = False
     replay_seconds: int = 30
     minimize_to_tray: bool = True

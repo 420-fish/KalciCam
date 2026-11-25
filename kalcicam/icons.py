@@ -141,6 +141,13 @@ def _shapes(name):
     elif name == "speaker_off":
         S += [_poly((3, 9), (7, 9), (12, 4.5), (12, 19.5), (7, 15), (3, 15), close=True),
               _poly((15, 9), (21, 15)), _poly((21, 9), (15, 15))]
+    elif name == "keyboard":
+        p = QPainterPath()
+        p.addRoundedRect(QRectF(2.5, 6, 19, 12), 2, 2)
+        S += [p, _poly((7, 14.5), (17, 14.5))]
+        for x in (6, 9.5, 13, 16.5):
+            F += [_rect(x - 0.9, 8.6, 1.8, 1.8)]
+        F += [_rect(4.6, 13.6, 1.8, 1.8), _rect(17.6, 13.6, 1.8, 1.8)]
     elif name == "power":
         S += [_arc(4.5, 5, 15, 15, 120, 300), _poly((12, 3), (12, 11))]
     elif name == "rec":

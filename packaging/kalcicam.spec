@@ -6,11 +6,17 @@ from pathlib import Path
 ROOT = Path(SPECPATH).parent
 IS_WIN = sys.platform.startswith("win")
 
+from PyInstaller.utils.hooks import collect_submodules
+
 hidden = []
 if IS_WIN:
     hidden += ["pynput.keyboard._win32", "pynput.mouse._win32"]
 else:
-    hidden += ["pynput.keyboard._xorg", "pynput.mouse._xorg", "dbus_fast", "dbus_fast.aio"]
+    # pynput picks its backend at runtime and python-xlib loads its X extensions with
+    # __import__, so PyInstaller can't see them: without these, global hotkeys die
+    # silently in the AppImage.
+    hidden += collect_submodules("pynput") + collect_submodules("Xlib")
+    hidden += ["dbus_fast", "dbus_fast.aio"]
 
 # Big Qt parts KalciCam never uses: leaving them out keeps the download small.
 excludes = [

@@ -9,17 +9,17 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (QAction, QColor, QDesktopServices, QGuiApplication, QIcon, QKeySequence, QPainter, QPen,
                            QPixmap)
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QFileDialog, QGridLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
                                QKeySequenceEdit, QLabel, QListWidget, QListWidgetItem, QMainWindow, QMenu,
                                QMessageBox, QScrollArea, QSpinBox, QStackedWidget, QSystemTrayIcon,
                                QVBoxLayout, QWidget)
 
-from . import APP_NAME, __version__, capture, config, encoders, hotkeys, icons, paths, sysinfo, themes
-from .overlays import ClickHighlighter, Hud, RegionSelector, WebcamBubble
+from . import APP_NAME, __version__, capture, config, encoders, hotkeys, icons, paths, sounds, sysinfo, themes
+from .overlays import ClickHighlighter, Countdown, Hud, RegionSelector, WebcamBubble
 from .recorder import WAYLAND, Recorder, ReplayBuffer, run_quiet, stamp
 from .meters import LevelMeter
-from .widgets import (Background, RecButton, ThemeCard, VolumeSlider, app_icon, button, hms, human_size,
-                      icon_label, label, panel, pynput_to_qt, qt_to_pynput, row, toggle, tool_button)
+from .widgets import (Background, RecButton, Section, ThemeCard, Toast, VolumeSlider, app_icon, button, hms,
+                      human_size, icon_label, label, panel, pynput_to_qt, qt_to_pynput, row, toggle, tool_button)
 
 PAGES = ["Home", "Video", "Audio", "Overlays", "Extras", "Recordings", "Themes", "About"]
 ICONS = {"Home": "home", "Video": "video", "Audio": "audio", "Overlays": "overlays", "Extras": "extras",
@@ -62,6 +62,10 @@ class MainWindow(QMainWindow):
         self._rotate_timer = QTimer(self, timeout=self._rotate)
 
         self._build()
+        self.toast = Toast(self.bg)
+        self.countdown = Countdown()
+        self.countdown.tick.connect(self._on_count)
+        self.countdown.done.connect(self._count_done)
         self._build_tray()
         self.apply_theme(self.theme)
         self._apply_rotation()
@@ -78,7 +82,7 @@ class MainWindow(QMainWindow):
         self.sig.encoder_done.connect(self._on_encoder_detected)
         self.sig.window_picked.connect(self._on_window_picked)
 
-        self.hotkeys.apply(self.s.hotkeys)
+        self._apply_hotkeys()
         self.recorder.recover_leftovers()
         if self.s.click_highlight:
             self.clicks.start()
@@ -234,157 +238,222 @@ class MainWindow(QMainWindow):
     def _page(self):
         w = QWidget()
         v = QVBoxLayout(w)
-        v.setContentsMargins(6, 4, 10, 10)
-        v.setSpacing(12)
+        v.setContentsMargins(4, 4, 12, 12)
+        v.setSpacing(14)
         return w, v
 
     def _page_home(self):
         w, v = self._page()
+        top = QHBoxLayout()
+        left = QVBoxLayout()
+        left.setSpacing(2)
         self.timer_lbl = label("00:00:00", "timer")
-        v.addWidget(self.timer_lbl)
-        self.state_lbl = label("Ready to record. Press F12 or the big REC button.", "sub", wrap=True)
-        v.addWidget(self.state_lbl)
+        left.addWidget(self.timer_lbl)
+        self.state_lbl = label("Ready to record.", "sub", wrap=True)
+        left.addWidget(self.state_lbl)
+        top.addLayout(left, 1)
+        v.addLayout(top)
 
-        v.addWidget(label("Quick switches", "h2"))
-        self.q_desk = toggle("Desktop audio", self.s.desktop_audio, icon="speaker")
-        self.q_mic = toggle("Microphone", self.s.mic, icon="mic")
-        self.q_cam = toggle("Webcam bubble", self.s.webcam, icon="webcam")
-        self.q_mouse = toggle("Show cursor", self.s.draw_mouse, icon="cursor")
+        # Shown only if the hotkeys aren't working, with a one-click fix.
+        self.hk_banner = QFrame()
+        self.hk_banner.setObjectName("banner")
+        hb = QHBoxLayout(self.hk_banner)
+        hb.setContentsMargins(12, 8, 12, 8)
+        hb.addWidget(icon_label("warn", "plain", 20))
+        self.hk_banner_lbl = label("", wrap=True)
+        hb.addWidget(self.hk_banner_lbl, 1)
+        self.hk_banner_btn = button("Fix it", "primary", icon="bolt")
+        self.hk_banner_btn.clicked.connect(self._fix_hotkeys)
+        hb.addWidget(self.hk_banner_btn)
+        self.hk_banner.hide()
+        v.addWidget(self.hk_banner)
+
+        # Three steps, so nobody has to guess how it works.
+        steps = QHBoxLayout()
+        steps.setSpacing(10)
+        hk = pynput_to_qt(self.s.hotkeys.get("record", ""))
+        self.step_rec_lbl = None
+        for n, title, text in (("1", "Pick", "Choose what to record with the mode button at the top."),
+                               ("2", "Record", f"Press REC or {hk or 'your hotkey'}. Press again to stop."),
+                               ("3", "Watch", "Your videos are in Recordings, ready to share.")):
+            tile = QFrame()
+            tile.setObjectName("tile")
+            tl = QHBoxLayout(tile)
+            tl.setContentsMargins(12, 10, 12, 10)
+            tl.addWidget(label(n, "tilenum"))
+            col = QVBoxLayout()
+            col.setSpacing(0)
+            col.addWidget(label(title, "h2"))
+            body = label(text, "sub", wrap=True)
+            col.addWidget(body)
+            if n == "2":
+                self.step_rec_lbl = body
+            tl.addLayout(col, 1)
+            steps.addWidget(tile, 1)
+        v.addLayout(steps)
+
+        quick = Section("Quick switches", "bolt")
+        self.q_desk = toggle("Desktop sound", self.s.desktop_audio, "Record what you hear", icon="speaker")
+        self.q_mic = toggle("Microphone", self.s.mic, "Record your voice", icon="mic")
+        self.q_cam = toggle("Webcam bubble", self.s.webcam, "Show your webcam in a circle", icon="webcam")
+        self.q_mouse = toggle("Show cursor", self.s.draw_mouse, "Show the mouse pointer in the video", icon="cursor")
         grid = QGridLayout()
-        grid.setHorizontalSpacing(24)
+        grid.setHorizontalSpacing(30)
+        grid.setVerticalSpacing(10)
         for i, c in enumerate((self.q_desk, self.q_mic, self.q_cam, self.q_mouse)):
             grid.addWidget(c, i // 2, i % 2)
-        v.addLayout(grid)
+        quick.add(grid)
         self.q_desk.toggled.connect(lambda on: self.set_audio("desktop_audio", on))
         self.q_mic.toggled.connect(lambda on: self.set_audio("mic", on))
         self.q_cam.toggled.connect(self._on_webcam_toggle)
         self.q_mouse.toggled.connect(lambda on: self._set("draw_mouse", on))
+        v.addWidget(quick)
 
-        v.addWidget(label("Hotkeys", "h2"))
+        keys = Section("Hotkeys", "keyboard")
         self.hotkey_hint = label("", "sub", wrap=True)
-        v.addWidget(self.hotkey_hint)
+        keys.add(self.hotkey_hint)
+        v.addWidget(keys)
         self._update_hotkey_hint()
 
+        self.last_card = Section("Last recording", "play")
         self.last_lbl = label("", "sub", wrap=True)
-        self.last_btn = button("Play last recording", icon="play")
-        self.last_btn.hide()
+        self.last_card.add(self.last_lbl)
+        self.last_btn = button("Play", icon="play")
         self.last_btn.clicked.connect(lambda: self._open(self._last_saved))
-        v.addWidget(self.last_lbl)
-        v.addLayout(row(self.last_btn))
+        last_folder = button("Show in folder", icon="folder")
+        last_folder.clicked.connect(lambda: self._open(os.path.dirname(self._last_saved)))
+        self.last_card.add(row(self.last_btn, last_folder))
+        self.last_card.hide()
+        v.addWidget(self.last_card)
         v.addStretch(1)
         return w
 
     def _page_video(self):
         w, v = self._page()
-        v.addWidget(label("Video", "h2"))
-
+        q = Section("Quality", "video", "Pick a preset, or change the numbers yourself.")
         self.preset_box = QComboBox()
         for key, text in (("gaming", "Gaming - 60 fps, balanced"), ("art", "Art / animation - 30 fps, sharp"),
                           ("small", "Small files - 30 fps"), ("custom", "Custom")):
             self.preset_box.addItem(text, key)
         self.preset_box.setCurrentIndex(max(0, self.preset_box.findData(self.s.preset)))
         self.preset_box.currentIndexChanged.connect(self._on_preset)
-        v.addLayout(row(label("Preset"), self.preset_box))
-
+        q.form("Preset", self.preset_box)
         self.fps_box = QSpinBox()
         self.fps_box.setRange(10, 240)
         self.fps_box.setValue(self.s.fps)
         self.fps_box.setSuffix(" fps")
         self.fps_box.valueChanged.connect(lambda x: self._custom("fps", x))
+        q.form("Frame rate", self.fps_box, hint="60 is smooth for games. 30 is fine for everything else.")
         self.q_box = QComboBox()
         for key, text in (("high", "High (bigger files)"), ("balanced", "Balanced"), ("small", "Small")):
             self.q_box.addItem(text, key)
         self.q_box.setCurrentIndex(self.q_box.findData(self.s.quality))
         self.q_box.currentIndexChanged.connect(lambda _: self._custom("quality", self.q_box.currentData()))
-        v.addLayout(row(label("Frame rate"), self.fps_box, 20, label("Quality"), self.q_box))
+        q.form("Quality", self.q_box)
+        v.addWidget(q)
 
-        v.addWidget(label("Encoder", "h2"))
+        rec = Section("Recording", "rec")
+        cd = QSpinBox()
+        cd.setRange(0, 10)
+        cd.setSuffix(" s")
+        cd.setSpecialValueText("Off")
+        cd.setValue(self.s.countdown)
+        cd.valueChanged.connect(lambda x: self._set("countdown", x))
+        rec.form("Countdown", cd, hint="A 3-2-1 before recording starts. Press REC again to cancel it.")
+        snd = toggle("Play a little click when recording starts and stops", self.s.sounds)
+        snd.toggled.connect(lambda on: self._set("sounds", on))
+        rec.add(snd)
+        v.addWidget(rec)
+
+        e = Section("Encoder", "bolt", "Uses your graphics card when it can, so recording barely uses the CPU. "
+                                        "'Auto' picks the best one that works on this computer.")
         self.enc_box = QComboBox()
         self._fill_encoders()
         self.enc_box.currentIndexChanged.connect(lambda _: self._set("encoder", self.enc_box.currentData(),
                                                                      after=self._update_status_static))
-        retest = button("Test my GPU again", icon="search")
+        retest = button("Test again", icon="search")
         retest.clicked.connect(self.detect_encoder)
-        v.addLayout(row(self.enc_box, retest))
-        v.addWidget(label("GPU encoders put the work on the graphics card, so recording barely uses the CPU. "
-                          "'Auto' picks the best one KalciCam found on this computer.", "hint", wrap=True))
+        e.form("Encoder", self.enc_box, retest)
+        v.addWidget(e)
 
-        v.addWidget(label("File", "h2"))
+        f = Section("Saving", "save")
         self.fmt_box = QComboBox()
         self.fmt_box.addItem("MP4 (plays everywhere)", "mp4")
-        self.fmt_box.addItem("MKV (raw)", "mkv")
+        self.fmt_box.addItem("MKV", "mkv")
         self.fmt_box.setCurrentIndex(self.fmt_box.findData(self.s.final_format))
         self.fmt_box.currentIndexChanged.connect(lambda _: self._set("final_format", self.fmt_box.currentData()))
-        v.addLayout(row(label("Save as"), self.fmt_box))
-        v.addWidget(label("KalciCam always records to crash-safe MKV first, then converts to MP4 when you stop. "
-                          "The conversion copies the video without re-encoding, so it takes about a second.",
-                          "hint", wrap=True))
-        keep = toggle("Also keep the original MKV", self.s.keep_mkv)
+        f.form("File type", self.fmt_box, hint="KalciCam records safely as MKV first (nothing is lost if the "
+                                               "computer crashes), then makes the MP4 in about a second.")
+        keep = toggle("Also keep the MKV copy", self.s.keep_mkv)
         keep.toggled.connect(lambda on: self._set("keep_mkv", on))
-        v.addWidget(keep)
-
+        f.add(keep)
         self.dir_lbl = label(str(self.s.video_dir()), "sub")
+        self.dir_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
         change = button("Change", icon="folder")
         change.clicked.connect(self._pick_dir)
-        v.addLayout(row(label("Folder"), self.dir_lbl, change))
+        f.form("Save videos in", self.dir_lbl, change)
+        v.addWidget(f)
 
         if self.session == "windows":
-            v.addWidget(label("Windows test options", "h2"))
+            win = Section("Windows test options", "monitor")
             eng = QComboBox()
             eng.addItem("Desktop Duplication (GPU, recommended)", "ddagrab")
             eng.addItem("GDI (compatible, more CPU)", "gdigrab")
             eng.setCurrentIndex(eng.findData(self.s.win_capture_engine))
             eng.currentIndexChanged.connect(lambda _: self._set("win_capture_engine", eng.currentData()))
-            v.addLayout(row(label("Capture"), eng))
+            win.form("Capture", eng)
+            v.addWidget(win)
         v.addStretch(1)
         return w
 
     def _page_audio(self):
         w, v = self._page()
         desk, mics = sysinfo.audio_devices()
-        v.addWidget(label("Desktop / game sound", "h2"))
+        d = Section("Desktop sound", "speaker", "Game sound, music, videos: whatever comes out of your speakers.")
+        refresh = tool_button("refresh", "Look for new devices", 34)
+        refresh.clicked.connect(self._refresh_audio)
+        d.head_widget(refresh)
         self.a_desk = toggle("Record what I hear", self.s.desktop_audio)
         self.a_desk.toggled.connect(lambda on: self.set_audio("desktop_audio", on))
+        d.add(self.a_desk)
         self.desk_box = self._device_box(desk, self.s.desktop_device, "desktop_device")
+        d.form("Device", self.desk_box)
         dv = VolumeSlider(self.s.desktop_volume)
         dv.changed.connect(lambda x: self._set("desktop_volume", x))
-        v.addWidget(self.a_desk)
-        v.addLayout(row(label("Device"), self.desk_box))
-        v.addLayout(row(label("Volume"), dv))
+        d.form("Volume", dv)
         if self.session == "windows":
-            v.addWidget(label("Windows test build: desktop sound needs a loopback device such as 'Stereo Mix' "
-                              "(enable it in Sound settings > Recording). On Linux it just works.", "hint",
-                              wrap=True))
+            d.add(label("Windows test build: desktop sound needs a 'Stereo Mix' device (Sound settings > "
+                        "Recording). On Linux it just works.", "hint", wrap=True))
+        v.addWidget(d)
 
-        v.addWidget(label("Microphone", "h2"))
+        m = Section("Microphone", "mic")
         self.a_mic = toggle("Record my microphone", self.s.mic)
         self.a_mic.toggled.connect(lambda on: self.set_audio("mic", on))
+        m.add(self.a_mic)
         self.mic_box = self._device_box(mics, self.s.mic_device, "mic_device")
+        m.form("Device", self.mic_box)
         mv = VolumeSlider(self.s.mic_volume)
         mv.changed.connect(lambda x: self._set("mic_volume", x))
-        v.addWidget(self.a_mic)
-        v.addLayout(row(label("Device"), self.mic_box))
-        v.addLayout(row(label("Volume"), mv))
-        refresh = button("Refresh devices", icon="refresh")
-        refresh.clicked.connect(self._refresh_audio)
-        v.addLayout(row(refresh))
+        m.form("Volume", mv)
+        v.addWidget(m)
 
-        v.addWidget(label("Audio only mode", "h2"))
+        a = Section("Audio only mode", "audio", "Pick 'Audio only' in the mode menu at the top to record just "
+                                                "sound, no video.")
         fmt = QComboBox()
         fmt.addItem("M4A (good quality, small)", "m4a")
         fmt.addItem("MP3 (plays everywhere)", "mp3")
         fmt.setCurrentIndex(max(0, fmt.findData(self.s.audio_format)))
         fmt.currentIndexChanged.connect(lambda _: (self._set("audio_format", fmt.currentData()),
                                                    self._update_mode_ui()))
-        v.addLayout(row(label("Save sound as"), fmt))
-        v.addWidget(label("Pick 'Audio only' from the mode menu at the top to record just sound, no video.",
-                          "hint", wrap=True))
+        a.form("Save sound as", fmt)
+        v.addWidget(a)
         v.addStretch(1)
         return w
 
     def _device_box(self, devs, current, key):
         b = QComboBox()
-        b.setMinimumWidth(340)
+        b.setMinimumWidth(320)
+        b.setMaximumWidth(460)
         for d in devs:
             b.addItem(d.name, d.id)
         i = b.findData(current)
@@ -401,51 +470,54 @@ class MainWindow(QMainWindow):
                 box.addItem(d.name, d.id)
             box.setCurrentIndex(max(0, box.findData(cur)))
             box.blockSignals(False)
+        self._notify(f"Found {len(desk) - 1} output(s) and {len(mics) - 1} microphone(s).")
 
     def _page_overlays(self):
         w, v = self._page()
-        v.addWidget(label("Webcam bubble", "h2"))
-        self.o_cam = toggle("Show my webcam in a round bubble", self.s.webcam)
+        c = Section("Webcam bubble", "webcam", "Your webcam in a circle on top of the screen, so it's in the "
+                                              "video. Drag it anywhere. Right-click it to hide it.")
+        self.o_cam = toggle("Show my webcam", self.s.webcam)
         self.o_cam.toggled.connect(self._on_webcam_toggle)
-        v.addWidget(self.o_cam)
+        c.add(self.o_cam)
         self.cam_box = QComboBox()
-        self.cam_box.setMinimumWidth(300)
+        self.cam_box.setMinimumWidth(280)
         self.cam_box.addItem("Default camera", "")
-        cam_refresh = tool_button("refresh", "Look for webcams", 40)
+        cam_refresh = tool_button("refresh", "Look for webcams", 34)
         cam_refresh.clicked.connect(self._fill_webcams)
         self.cam_box.currentIndexChanged.connect(lambda _: self._set("webcam_device", self.cam_box.currentData(),
                                                                      after=self._restart_webcam))
+        c.form("Camera", self.cam_box, cam_refresh)
         size = QSpinBox()
         size.setRange(120, 480)
         size.setSingleStep(20)
         size.setSuffix(" px")
         size.setValue(self.s.webcam_size)
         size.valueChanged.connect(lambda x: self._set("webcam_size", x, after=self._restart_webcam))
-        v.addLayout(row(label("Camera"), self.cam_box, cam_refresh, 12, label("Size"), size))
-        v.addWidget(label("The bubble floats on top of your screen, so it's captured in the recording. "
-                          "Drag it anywhere, right-click to hide.", "hint", wrap=True))
+        c.form("Size", size)
+        v.addWidget(c)
 
-        v.addWidget(label("Recording HUD", "h2"))
         if paths.IS_WINDOWS:
-            hud = toggle("Show the REC timer + FPS badge while recording", self.s.hud)
-            hint = "You see the badge, but it's kept out of the video."
+            h = Section("Recording badge", "rec", "A small REC timer in the corner. You see it, but it's kept "
+                                                  "out of the video.")
+            hud = toggle("Show the REC badge while recording", self.s.hud)
         else:
-            hud = toggle("Also show a floating REC badge on screen (it WILL appear in the video)", self.s.hud)
-            hint = ("While recording, the KalciCam tray icon turns into a red dot (yellow when paused). "
-                    "Hover over it to see the timer. Linux doesn't let apps hide a window from a screen "
-                    "recording, so the floating badge is off unless you want it in your videos.")
+            h = Section("Recording badge", "rec", "While recording, the KalciCam icon in your panel turns into a "
+                                                  "red dot (yellow when paused). Point at it to see the time. "
+                                                  "Linux can't hide windows from a recording, so the floating "
+                                                  "badge would show up in your video.")
+            hud = toggle("Also show a floating badge (it WILL be in the video)", self.s.hud)
         hud.toggled.connect(lambda on: self._set("hud", on, after=self._sync_hud))
-        v.addWidget(hud)
-        v.addWidget(label(hint, "hint", wrap=True))
+        h.add(hud)
+        v.addWidget(h)
 
-        v.addWidget(label("Click highlights", "h2"))
+        k = Section("Click highlights", "cursor", "A ripple where you click, handy for tutorials.")
         ch = toggle("Show a ripple where I click", self.s.click_highlight)
         ch.setEnabled(ClickHighlighter.supported())
         ch.toggled.connect(self._on_click_toggle)
-        v.addWidget(ch)
+        k.add(ch)
         if not ClickHighlighter.supported():
-            v.addWidget(label("Wayland doesn't let apps see clicks outside their own window, so this only works "
-                              "in an X11 session.", "hint", wrap=True))
+            k.add(label("Only works on X11 desktops like Linux Mint.", "hint", wrap=True))
+        v.addWidget(k)
         v.addStretch(1)
         QTimer.singleShot(0, self._fill_webcams)
         return w
@@ -462,40 +534,44 @@ class MainWindow(QMainWindow):
 
     def _page_extras(self):
         w, v = self._page()
-        v.addWidget(label("Hotkeys", "h2"))
+        hk = Section("Hotkeys", "keyboard", "Click a box, then press the key you want.")
+        st = QHBoxLayout()
+        self.hk_status_icon = icon_label("check", "accent", 18)
+        self.hk_status = label("", "hk_ok", wrap=True)
+        st.addWidget(self.hk_status_icon)
+        st.addWidget(self.hk_status, 1)
+        hk.add(st)
         self.hk_edits = {}
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(14)
-        for i, (key, text) in enumerate((("record", "Start / stop recording"), ("pause", "Pause / resume"),
-                                         ("screenshot", "Screenshot"), ("replay", "Save replay"))):
+        for key, text in (("record", "Start / stop"), ("pause", "Pause / resume"),
+                          ("screenshot", "Screenshot"), ("replay", "Save replay")):
             e = QKeySequenceEdit(QKeySequence(pynput_to_qt(self.s.hotkeys.get(key, ""))))
             e.setMaximumSequenceLength(1)
+            e.setMaximumWidth(220)
             e.editingFinished.connect(lambda k=key, e=e: self._on_hotkey(k, e))
-            grid.addWidget(label(text), i, 0)
-            grid.addWidget(e, i, 1)
+            hk.form(text, e)
             self.hk_edits[key] = e
-        v.addLayout(grid)
-        reset = button("Reset to F12 / Shift+F12 / F11 / F10")
+        reset = button("Reset to F12 / Shift+F12 / F11 / F10", icon="refresh")
         reset.clicked.connect(self._reset_hotkeys)
-        v.addLayout(row(reset))
+        hk.add(row(reset))
+        if hotkeys.system_shortcuts_available():
+            self.hk_sys = toggle(f"Use {hotkeys.desktop_name()}'s keyboard shortcuts instead", self.s.hotkeys_system)
+            self.hk_sys.setToolTip("Lets your desktop handle the keys. Use this if the hotkeys don't react.")
+            self.hk_sys.toggled.connect(self._on_hotkeys_system)
+            hk.add(self.hk_sys)
         if not hotkeys.GlobalHotkeys.supported():
             exe = hotkeys.launch_command()
-            v.addWidget(label("Wayland doesn't let apps listen for keys in the background, so the hotkeys work "
-                              "through your desktop's keyboard shortcuts instead. Bind your keys to:", "hint",
-                              wrap=True))
+            hk.add(label("If your desktop isn't listed above, add these as keyboard shortcuts in your "
+                         "system settings:", "hint", wrap=True))
             code = label(f"{exe} --toggle\n{exe} --pause\n{exe} --screenshot\n{exe} --replay", "code")
             code.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            v.addWidget(code)
-            if hotkeys.is_gnome():
-                g = button("Add these shortcuts to GNOME for me", "primary", icon="bolt")
-                g.clicked.connect(lambda: self._notify(hotkeys.add_gnome_shortcuts(self.s.hotkeys)[1]))
-                v.addLayout(row(g))
+            hk.add(code)
+        v.addWidget(hk)
 
-        v.addWidget(label("Replay buffer", "h2"))
-        v.addWidget(label("Keeps the last few seconds in memory-light chunks so you can save a clip after "
-                          "something cool happens, like an instant replay.", "hint", wrap=True))
+        rb = Section("Replay buffer", "save", "Keeps the last few seconds ready, so you can save a clip after "
+                                              "something cool happens.")
         self.rb_toggle = toggle("Keep a replay buffer running", self.s.replay_enabled)
         self.rb_toggle.toggled.connect(self._on_replay_toggle)
+        rb.add(self.rb_toggle)
         secs = QSpinBox()
         secs.setRange(10, 300)
         secs.setSingleStep(10)
@@ -504,21 +580,34 @@ class MainWindow(QMainWindow):
         secs.valueChanged.connect(lambda x: self._set("replay_seconds", x))
         save_now = button("Save replay now", icon="save")
         save_now.clicked.connect(self.replay.save)
-        v.addWidget(self.rb_toggle)
-        v.addLayout(row(label("Length"), secs, save_now))
-        self.rb_state = label("", "sub")
-        v.addWidget(self.rb_state)
+        rb.form("Length", secs, save_now)
+        self.rb_state = label("Buffer off", "sub")
+        rb.form("Status", self.rb_state)
+        v.addWidget(rb)
 
-        v.addWidget(label("Window", "h2"))
-        tray = toggle("Closing the window keeps KalciCam running in the tray", self.s.minimize_to_tray)
+        win = Section("Window", "window")
+        tray = toggle("Closing the window keeps KalciCam running in the panel", self.s.minimize_to_tray)
         tray.toggled.connect(lambda on: self._set("minimize_to_tray", on))
-        v.addWidget(tray)
+        win.add(tray)
+        v.addWidget(win)
         v.addStretch(1)
         return w
 
     def _page_recordings(self):
         w, v = self._page()
-        v.addWidget(label("Your recordings", "h2"))
+        head = QHBoxLayout()
+        head.addWidget(label("Your recordings", "h2"))
+        self.rec_count = label("", "sub")
+        head.addWidget(self.rec_count)
+        head.addStretch(1)
+        refresh = button("Refresh", icon="refresh")
+        refresh.clicked.connect(self.refresh_recordings)
+        head.addWidget(refresh)
+        v.addLayout(head)
+        self.rec_empty = label("No recordings yet.\nPress REC (or your hotkey) to make your first one.", "empty")
+        self.rec_empty.setAlignment(Qt.AlignCenter)
+        self.rec_empty.hide()
+        v.addWidget(self.rec_empty)
         self.rec_list = QListWidget()
         self.rec_list.setViewMode(QListWidget.IconMode)
         self.rec_list.setIconSize(QSize(208, 117))
@@ -526,7 +615,8 @@ class MainWindow(QMainWindow):
         self.rec_list.setResizeMode(QListWidget.Adjust)
         self.rec_list.setMovement(QListWidget.Static)
         self.rec_list.setWordWrap(True)
-        self.rec_list.setMinimumHeight(360)
+        self.rec_list.setMinimumHeight(340)
+        self.rec_list.setToolTip("Double-click to play. Right-click for more.")
         self.rec_list.itemDoubleClicked.connect(lambda it: self._open(it.data(Qt.UserRole)))
         self.rec_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.rec_list.customContextMenuRequested.connect(self._rec_menu)
@@ -537,56 +627,62 @@ class MainWindow(QMainWindow):
         show.clicked.connect(lambda: self._rec_action("folder"))
         delete = button("Move to trash", icon="trash")
         delete.clicked.connect(lambda: self._rec_action("trash"))
-        refresh = button("Refresh", icon="refresh")
-        refresh.clicked.connect(self.refresh_recordings)
-        v.addLayout(row(play, show, delete, None, refresh, stretch=False))
+        self.rec_buttons = (play, show, delete)
+        v.addLayout(row(play, show, delete))
         return w
 
     def _page_themes(self):
         w, v = self._page()
-        v.addWidget(label("Pick a background", "h2"))
-        v.addWidget(label("Each picture comes with its own colours for the whole app.", "hint"))
+        t = Section("Background", "themes", "Each picture comes with its own colours for the whole app.")
         grid = QGridLayout()
         grid.setSpacing(12)
         self.theme_group = QButtonGroup(self)
-        for i, t in enumerate(themes.THEMES):
-            c = ThemeCard(t, 200, 120)
-            c.setChecked(t.key == self.theme.key)
+        for i, th in enumerate(themes.THEMES):
+            c = ThemeCard(th, 200, 120)
+            c.setChecked(th.key == self.theme.key)
             self.theme_group.addButton(c, i)
             grid.addWidget(c, i // 3, i % 3)
         self.theme_group.idClicked.connect(lambda i: self.set_theme(themes.THEMES[i].key))
-        v.addLayout(grid)
-        rot = toggle("Rotate backgrounds automatically", self.s.rotate_backgrounds)
+        t.add(grid)
+        rot = toggle("Change the picture automatically", self.s.rotate_backgrounds)
         mins = QSpinBox()
         mins.setRange(1, 240)
         mins.setSuffix(" min")
         mins.setValue(self.s.rotate_minutes)
         rot.toggled.connect(lambda on: self._set("rotate_backgrounds", on, after=self._apply_rotation))
         mins.valueChanged.connect(lambda x: self._set("rotate_minutes", x, after=self._apply_rotation))
-        v.addLayout(row(rot, label("every"), mins))
+        t.add(row(rot, label("every"), mins))
+        v.addWidget(t)
         v.addStretch(1)
         return w
 
     def _page_about(self):
         w, v = self._page()
-        v.addWidget(label(f"{APP_NAME} {__version__}", "h2"))
-        st = {"windows": "Windows (test build)", "x11": "Linux · X11", "wayland": "Linux · Wayland"}[self.session]
+        a = Section(f"{APP_NAME} {__version__}", "about")
+        st = {"windows": "Windows (test build)", "x11": "Linux (X11)", "wayland": "Linux (Wayland)"}[self.session]
         be = {"ffmpeg_win": "FFmpeg + Desktop Duplication", "ffmpeg_linux": "FFmpeg + x11grab",
-              "gst": "GStreamer + PipeWire portal"}[encoders.backend()]
+              "gst": "GStreamer + PipeWire"}[encoders.backend()]
         self.about_info = label("", "sub", wrap=True)
-        v.addWidget(self.about_info)
+        self.about_info.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._about_text = f"System: {st}\nCapture: {be}\nSettings: {paths.config_dir()}"
         self.about_info.setText(self._about_text)
+        a.add(self.about_info)
         again = button("Run setup again", "primary", icon="wand")
         again.clicked.connect(self.request_setup.emit)
-        v.addLayout(row(again))
-        v.addWidget(label("Why it's light on CPU", "h2"))
-        v.addWidget(label(
-            "• Video is encoded on the graphics card (NVENC / VA-API / AMF) whenever possible.\n"
-            "• On Linux X11 + VA-API, colour conversion also happens on the GPU.\n"
-            "• The window doesn't show a live preview, and it only refreshes twice a second while recording.\n"
-            "• Pause and MP4 conversion copy the video without re-encoding it.\n"
-            "• The photo background is scaled once and cached.", "sub", wrap=True))
+        report = button("Copy info for help", icon="copy")
+        report.setToolTip("Copies a short report (versions, encoder, hotkeys) to send to whoever helps you.")
+        report.clicked.connect(self._copy_report)
+        log = button("Open log", icon="folder")
+        log.clicked.connect(lambda: self._open(str(paths.cache_dir() / "kalcicam.log")))
+        a.add(row(again, report, log))
+        v.addWidget(a)
+        why = Section("Why it's light on your computer", "bolt")
+        why.add(label(
+            "- Video is made by the graphics card whenever possible.\n"
+            "- There's no live preview, and the window barely redraws while recording.\n"
+            "- Pausing and making the MP4 copy the video instead of re-making it.\n"
+            "- The background picture is drawn once and reused.", "sub", wrap=True))
+        v.addWidget(why)
         v.addStretch(1)
         return w
 
@@ -788,24 +884,25 @@ class MainWindow(QMainWindow):
         parts = [f"{pynput_to_qt(hk.get('record'))}: start/stop", f"{pynput_to_qt(hk.get('pause'))}: pause",
                  f"{pynput_to_qt(hk.get('screenshot'))}: screenshot", f"{pynput_to_qt(hk.get('replay'))}: save replay"]
         txt = "   ·   ".join(parts)
-        if not hotkeys.GlobalHotkeys.supported():
-            txt += "\n(Wayland: set these up once in the Extras tab.)"
         self.hotkey_hint.setText(txt)
+        if getattr(self, "step_rec_lbl", None) is not None:
+            rec = pynput_to_qt(hk.get("record", ""))
+            self.step_rec_lbl.setText(f"Press REC or {rec or 'your hotkey'}. Press again to stop.")
 
     def _on_hotkey(self, key, edit):
         seq = edit.keySequence().toString()
         self.s.hotkeys[key] = qt_to_pynput(seq)
         self._save_timer.start()
-        self.hotkeys.apply(self.s.hotkeys)
-        self._update_hotkey_hint()
+        self._apply_hotkeys()
+        self._notify(f"Hotkey set: {seq or 'none'}")
 
     def _reset_hotkeys(self):
         self.s.hotkeys = dict(config.DEFAULT_HOTKEYS)
         for k, e in self.hk_edits.items():
             e.setKeySequence(QKeySequence(pynput_to_qt(self.s.hotkeys[k])))
         self._save_timer.start()
-        self.hotkeys.apply(self.s.hotkeys)
-        self._update_hotkey_hint()
+        self._apply_hotkeys()
+        self._notify("Hotkeys reset to F12 / Shift+F12 / F11 / F10.")
 
     # ======================================================== mode / target
     MODE_LABELS = {
@@ -953,10 +1050,10 @@ class MainWindow(QMainWindow):
         for meter, on, dev in ((self.spk_meter, self.s.desktop_audio, self.s.desktop_device),
                                (self.mic_meter, self.s.mic, self.s.mic_device)):
             if visible and on:
-                meter.start(dev)
+                meter.start(dev)  # hides itself if the device can't be opened
             else:
                 meter.stop()
-                meter.setVisible(True)
+                meter.setVisible(False)  # muted: no empty bar next to the button
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -1046,6 +1143,32 @@ class MainWindow(QMainWindow):
 
     # ======================================================== recording
     def toggle_record(self):
+        if self.countdown.running():  # pressing again during 3-2-1 cancels
+            self.countdown.cancel()
+            self.rec_btn.set_countdown(0)
+            self._notify("Recording cancelled.")
+            return
+        if self.recorder.state == "idle" and self.s.countdown > 0:
+            self.countdown.theme = self.theme
+            screen = (self.s.region.get("screen", 0) if self.s.mode in ("region", "rect") and self.s.region
+                      else self.s.monitor)
+            self.countdown.start(int(self.s.countdown), screen)
+            return
+        self._start_or_stop()
+
+    def _on_count(self, n):
+        self.rec_btn.set_countdown(n)
+        self.state_lbl.setText(f"Recording in {n}... (press REC again to cancel)")
+        if self.s.sounds:
+            sounds.play("tick")
+
+    def _count_done(self):
+        self.rec_btn.set_countdown(0)
+        self._start_or_stop()
+
+    def _start_or_stop(self):
+        if self.recorder.state == "idle" and self.s.sounds:
+            sounds.play("start")  # plays before capture opens, so it isn't recorded
         if self.recorder.state == "idle" and self.replay.running():
             # One capture at a time keeps CPU/GPU use low: pause the buffer while recording.
             self._replay_resume = True
@@ -1054,6 +1177,9 @@ class MainWindow(QMainWindow):
 
     def _on_state(self, st):
         rec = st in ("recording", "paused")
+        if st == "idle" and getattr(self, "_last_state", "idle") == "saving" and self.s.sounds:
+            sounds.play("stop")  # capture has ended, so it isn't recorded
+        self._last_state = st
         self.rec_btn.set_recording(rec)
         self.pause_btn.setEnabled(rec)
         icons.bind(self.pause_btn, "play" if st == "paused" else "pause", "plain", 22)
@@ -1119,8 +1245,12 @@ class MainWindow(QMainWindow):
 
     def _on_saved(self, path):
         self._last_saved = path
-        self.last_lbl.setText(f"Saved: {path}")
-        self.last_btn.show()
+        try:
+            size = human_size(os.path.getsize(path))
+        except OSError:
+            size = ""
+        self.last_lbl.setText(f"{os.path.basename(path)}   {size}\n{os.path.dirname(path)}")
+        self.last_card.show()
         self._notify(f"Saved {os.path.basename(path)}")
         if self.stack.currentIndex() == PAGES.index("Recordings"):
             self.refresh_recordings()
@@ -1180,6 +1310,8 @@ class MainWindow(QMainWindow):
         if region:
             pm = pm.copy(region["x"], region["y"], region["w"], region["h"])
         if pm.save(str(dest), "PNG"):
+            if self.s.sounds:
+                sounds.play("shot")
             self._notify(f"Screenshot saved: {dest.name}")
         else:
             self._show_error("Couldn't save the screenshot.")
@@ -1190,6 +1322,11 @@ class MainWindow(QMainWindow):
         d = self.s.video_dir()
         files = sorted([p for p in d.glob("*") if p.suffix.lower() in (".mp4", ".mkv", ".m4a", ".mp3")],
                        key=lambda p: p.stat().st_mtime, reverse=True)
+        self.rec_empty.setVisible(not files)
+        self.rec_list.setVisible(bool(files))
+        for b in self.rec_buttons:
+            b.setEnabled(bool(files))
+        self.rec_count.setText(f"{len(files)} file{'s' if len(files) != 1 else ''}" if files else "")
         thumbs = paths.cache_dir() / "thumbs"
         thumbs.mkdir(exist_ok=True)
         todo = []
@@ -1268,17 +1405,94 @@ class MainWindow(QMainWindow):
         if path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
-    def _notify(self, msg):
-        if self.recorder.state == "idle":
+    def _notify(self, msg, kind="info"):
+        """Slide-in message in the window, or a desktop notification if KalciCam is hidden."""
+        if self.recorder.state == "idle" and kind == "info":
             self.state_lbl.setText(msg)
-        if self.tray and not self.isVisible():
-            self.tray.showMessage(APP_NAME, msg, app_icon(), 3000)
+        if self.isVisible() and not self.isMinimized():
+            self.toast.show_message(msg, kind)
+        elif self.tray:
+            self.tray.showMessage(APP_NAME, msg, app_icon() if kind == "info" else QSystemTrayIcon.Warning, 3500)
 
     def _show_error(self, msg):
-        if self.isVisible():
+        if self.isVisible() and len(msg) < 90 and "\n" not in msg:
+            self._notify(msg, "error")
+        elif self.isVisible():
             QMessageBox.warning(self, APP_NAME, msg)
         elif self.tray:
             self.tray.showMessage(APP_NAME, msg, QSystemTrayIcon.Warning, 6000)
+
+    # ---- hotkeys: start them, show whether they work, offer a fix ----
+    def _apply_hotkeys(self):
+        live = self.hotkeys.apply(self.s.hotkeys, enabled=not self.s.hotkeys_system)
+        if self.s.hotkeys_system:
+            hotkeys.add_system_shortcuts(self.s.hotkeys)  # keep desktop shortcuts in step with edits
+        self._update_hotkey_hint()
+        self._update_hk_status(live)
+
+    def _update_hk_status(self, live):
+        wayland = not hotkeys.GlobalHotkeys.supported()
+        if self.s.hotkeys_system:
+            ok, text = True, f"Handled by {hotkeys.desktop_name()}'s keyboard shortcuts."
+        elif live:
+            ok, text = True, "Hotkeys are working, even when KalciCam is in the background."
+        elif wayland:
+            ok, text = False, ("Your desktop (Wayland) doesn't let apps listen for keys. "
+                               + ("Turn on the option below to use your desktop's shortcuts."
+                                  if hotkeys.system_shortcuts_available() else
+                                  "Add the commands below as keyboard shortcuts in your system settings."))
+        else:
+            ok, text = False, f"Hotkeys aren't working. {self.hotkeys.error}"
+        if hasattr(self, "hk_status"):
+            self.hk_status.setText(text)
+            self.hk_status.setObjectName("hk_ok" if ok else "hk_bad")
+            self.hk_status.style().unpolish(self.hk_status)
+            self.hk_status.style().polish(self.hk_status)
+            icons.bind(self.hk_status_icon, "check" if ok else "warn", "accent" if ok else "plain", 18)
+        if hasattr(self, "hk_banner"):
+            fixable = hotkeys.system_shortcuts_available()
+            self.hk_banner_lbl.setText(text + (f" Click 'Fix it' to use {hotkeys.desktop_name()}'s keyboard "
+                                               "shortcuts instead." if fixable else " See Extras > Hotkeys."))
+            self.hk_banner_btn.setVisible(fixable)
+            self.hk_banner.setVisible(not ok)
+
+    def _fix_hotkeys(self):
+        if hasattr(self, "hk_sys"):
+            self.hk_sys.setChecked(True)  # runs _on_hotkeys_system
+        else:
+            self._on_hotkeys_system(True)
+
+    def _on_hotkeys_system(self, on):
+        self._set("hotkeys_system", on)
+        if on:
+            ok, msg = hotkeys.add_system_shortcuts(self.s.hotkeys)
+            if not ok:
+                self._set("hotkeys_system", False)
+                if hasattr(self, "hk_sys"):
+                    self.hk_sys.blockSignals(True)
+                    self.hk_sys.setChecked(False)
+                    self.hk_sys.blockSignals(False)
+                self._notify(msg, "error")
+            else:
+                self._notify(msg)
+        else:
+            hotkeys.remove_system_shortcuts()  # so keys don't fire twice
+            self._notify("KalciCam listens for the hotkeys itself again.")
+        self._apply_hotkeys()
+
+    def _copy_report(self):
+        key = self.s.encoder if self.s.encoder != "auto" else self.s.detected_encoder
+        lines = [
+            f"KalciCam {__version__}",
+            self._about_text,
+            f"Desktop: {os.environ.get('XDG_CURRENT_DESKTOP', '-')}",
+            f"Encoder: {encoders.label(key)}",
+            f"Hotkeys: {'desktop shortcuts' if self.s.hotkeys_system else ('working' if self.hotkeys.ok else 'NOT working: ' + self.hotkeys.error)}",
+            f"Mode: {self.s.mode}  fps: {self.s.fps}  quality: {self.s.quality}",
+            f"Log: {paths.cache_dir() / 'kalcicam.log'}",
+        ]
+        QGuiApplication.clipboard().setText("\n".join(lines))
+        self._notify("Copied. Paste it in a message to whoever helps you.")
 
     def handle_command(self, cmd):
         if cmd == "toggle":

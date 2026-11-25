@@ -31,7 +31,8 @@ The first time, a setup helper opens. Just follow it. It will:
 ## Recording
 
 Press the big **REC** button, or press **F12**.
-Press it again to stop. Your video is saved right away.
+A 3-2-1 countdown shows, then it starts recording. Press it again to stop. Your video is saved right away.
+(Don't want the countdown? Turn it off in **Video**.)
 
 | Key | What it does |
 |---|---|
@@ -99,7 +100,7 @@ That means it can't use your graphics card yet. Open **About**, click **Run setu
 Check that the speaker or microphone button at the top is on, and that the little bars move when there's sound.
 
 **The keys (F12 and so on) don't work.**
-On some newer Linux desktops (called "Wayland"), apps can't listen for keys in the background. Go to **Extras** to see how to add the keys in your system's keyboard settings.
+KalciCam shows a red message on the Home page if its keys aren't working. Click **Fix it**, and it lets your desktop handle the keys instead (works on Linux Mint and GNOME). You can also turn this on in **Extras > Hotkeys**.
 
 **"Around mouse" is greyed out.**
 It only works on Linux desktops like Linux Mint (called "X11"), not on newer "Wayland" desktops.

@@ -77,6 +77,92 @@ class Hud(QWidget):
         p.drawText(QRectF(38, 0, self.width() - 44, self.height()), Qt.AlignVCenter | Qt.AlignLeft, self.text)
 
 
+# ---------------- 3-2-1 countdown ----------------
+
+class Countdown(QWidget):
+    """Big 3-2-1 in the middle of the screen that's about to be recorded.
+
+    It's gone before capture starts, so it never shows up in the video.
+    """
+    tick = Signal(int)  # the number now showing
+    done = Signal()
+
+    SIZE = 220
+
+    def __init__(self):
+        super().__init__(None, OVERLAY_FLAGS | Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.resize(self.SIZE, self.SIZE)
+        self.theme = themes.THEMES[0]
+        self.n = 0
+        self.t = 0.0
+        from PySide6.QtCore import QTimer
+
+        self.timer = QTimer(self, interval=1000, timeout=self._next)
+        self.anim = QVariantAnimation(self, startValue=0.0, endValue=1.0, duration=900)
+        self.anim.valueChanged.connect(self._frame)
+
+    def running(self) -> bool:
+        return self.timer.isActive()
+
+    def start(self, seconds: int, screen_idx: int):
+        screens = QGuiApplication.screens()
+        g = screens[max(0, min(screen_idx, len(screens) - 1))].geometry()
+        self.move(g.center().x() - self.SIZE // 2, g.center().y() - self.SIZE // 2)
+        self.n = seconds
+        self.show()
+        self._show_number()
+        self.timer.start()
+
+    def cancel(self):
+        self.timer.stop()
+        self.anim.stop()
+        self.hide()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        exclude_from_capture(self)
+
+    def _next(self):
+        self.n -= 1
+        if self.n <= 0:
+            self.cancel()
+            self.done.emit()
+            return
+        self._show_number()
+
+    def _show_number(self):
+        self.tick.emit(self.n)
+        self.anim.stop()
+        self.anim.start()
+
+    def _frame(self, v):
+        self.t = v
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        fade = 1.0 - max(0.0, (self.t - 0.6) / 0.4)
+        scale = 1.25 - 0.25 * min(1.0, self.t * 3)
+        c = self.rect().center()
+        r = self.SIZE * 0.42 * scale
+        bg = QColor(0, 0, 0, int(170 * fade))
+        p.setBrush(bg)
+        ring = QColor(self.theme.accent)
+        ring.setAlphaF(fade)
+        p.setPen(QPen(ring, 6))
+        p.drawRect(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r))
+        f = QFont(themes.HEAD)
+        f.setPixelSize(int(110 * scale))
+        p.setFont(f)
+        txt = QColor("white")
+        txt.setAlphaF(fade)
+        p.setPen(txt)
+        p.drawText(self.rect(), Qt.AlignCenter, str(self.n))
+
+
 # ---------------- click ripple ----------------
 
 class _Ripple(QWidget):

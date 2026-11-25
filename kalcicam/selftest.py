@@ -47,7 +47,36 @@ def run(app) -> int:
         for a in sysinfo.gpu_advice():
             print("       hint:", a.text, flush=True)
 
-    # 4. Record 3 s, pause 1 s, record 2 s, stop: from worker threads, like the real app.
+    # 4. Global hotkeys: start the real listener and press a key like a keyboard would.
+    if sysinfo.session_type() == "wayland":
+        print("[SKIP] hotkeys: Wayland uses desktop shortcuts instead", flush=True)
+    else:
+        from .hotkeys import Bridge, GlobalHotkeys
+
+        bridge = Bridge()
+        got = []
+        bridge.command.connect(got.append)
+        hk = GlobalHotkeys(bridge)
+        live = hk.apply({"record": "<f9>"})
+        check("hotkey listener starts", live, hk.error or "listening")
+        if live:
+            try:
+                from pynput.keyboard import Controller, Key
+
+                kb = Controller()
+                time.sleep(0.4)
+                kb.press(Key.f9)
+                kb.release(Key.f9)
+                end = time.monotonic() + 3
+                while time.monotonic() < end and not got:
+                    app.processEvents()
+                    time.sleep(0.05)
+                check("pressing a hotkey reaches KalciCam", "toggle" in got, f"got {got or 'nothing'}")
+            except Exception as e:
+                check("pressing a hotkey reaches KalciCam", False, str(e))
+        hk.stop()
+
+    # 5. Record 3 s, pause 1 s, record 2 s, stop: from worker threads, like the real app.
     tmp = tempfile.mkdtemp(prefix="kalcicam-selftest-")
     s = config.Settings()
     s.save_dir = tmp

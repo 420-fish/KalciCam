@@ -213,10 +213,29 @@ class RecButton(QPushButton):
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip("Start / stop recording")
         self.recording = False
+        self.counting = 0  # countdown number shown on the tile, 0 = none
         self._rnd_seed = 3
+        self._phase = 0.0
+        from PySide6.QtCore import QTimer
+
+        # A soft pulse while recording; ~12 fps and only while recording, so it's cheap.
+        self._pulse = QTimer(self, interval=80, timeout=self._tick)
 
     def set_recording(self, on: bool):
         self.recording = on
+        if on:
+            self._pulse.start()
+        else:
+            self._pulse.stop()
+            self._phase = 0.0
+        self.update()
+
+    def set_countdown(self, n: int):
+        self.counting = n
+        self.update()
+
+    def _tick(self):
+        self._phase = (self._phase + 0.08) % 1.0
         self.update()
 
     def paintEvent(self, _):
@@ -241,8 +260,19 @@ class RecButton(QPushButton):
         p.setClipping(False)
         p.setPen(QPen(QColor(255, 255, 255, 230), 2.4))
         p.drawPolygon(poly)
+        if self.recording:  # pulse: a ring that grows and fades
+            a = int(150 * (1 - self._phase))
+            grow = 2 + 4 * self._phase
+            ring = QColor(t.rec)
+            ring.setAlpha(a)
+            p.setPen(QPen(ring, 2.5))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(r.adjusted(-grow, -grow, grow, grow))
         p.setPen(QColor("white"))
-        if self.recording:
+        if self.counting:
+            p.setFont(head_font(26))
+            p.drawText(r, Qt.AlignCenter, str(self.counting))
+        elif self.recording:
             p.setBrush(QColor("white"))
             p.setPen(Qt.NoPen)
             p.drawRect(QRectF(r.center().x() - 9, r.center().y() - 16, 18, 18))
@@ -253,6 +283,117 @@ class RecButton(QPushButton):
             p.setFont(head_font(14))
             p.drawText(r, Qt.AlignCenter, "REC")
         draw_tape(p, QPointF(r.left() + 10, r.top() + 2), -40, 40, rnd, False)
+
+
+class Section(QFrame):
+    """A tidy settings card: icon + title, optional hint, then aligned form rows.
+
+    Every settings page is built from these so spacing and alignment match.
+    """
+
+    LABEL_W = 150
+
+    def __init__(self, title: str, icon: str = None, hint: str = None):
+        super().__init__()
+        self.setObjectName("section")
+        self.v = QVBoxLayout(self)
+        self.v.setContentsMargins(16, 12, 16, 14)
+        self.v.setSpacing(8)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        if icon:
+            head.addWidget(icon_label(icon, "accent", 18))
+        head.addWidget(label(title, "h2"))
+        head.addStretch(1)
+        self.head = head
+        self.v.addLayout(head)
+        if hint:
+            self.v.addWidget(label(hint, "hint", wrap=True))
+        self.grid = None
+
+    def add(self, w):
+        if isinstance(w, QWidget):
+            self.v.addWidget(w)
+        else:
+            self.v.addLayout(w)
+        return w
+
+    def head_widget(self, w):
+        """Put a small control (like a refresh button) on the right of the title."""
+        self.head.addWidget(w)
+        return w
+
+    def form(self, text: str, *widgets, hint: str = None):
+        """A row: fixed-width label on the left, controls on the right."""
+        h = QHBoxLayout()
+        h.setSpacing(10)
+        lb = label(text)
+        lb.setFixedWidth(self.LABEL_W)
+        h.addWidget(lb)
+        for w in widgets:
+            if isinstance(w, int):
+                h.addSpacing(w)
+            elif isinstance(w, QWidget):
+                h.addWidget(w)
+            else:
+                h.addLayout(w)
+        h.addStretch(1)
+        self.v.addLayout(h)
+        if hint:
+            hl = label(hint, "hint", wrap=True)
+            hl.setContentsMargins(self.LABEL_W + 10, 0, 0, 0)
+            self.v.addWidget(hl)
+        return h
+
+
+class Toast(QLabel):
+    """A short message that slides up at the bottom of the window, then fades away."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName("toast")
+        self.setWordWrap(True)
+        self.setAlignment(Qt.AlignCenter)
+        self.hide()
+        from PySide6.QtCore import QPropertyAnimation, QTimer
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+
+        self.fx = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.fx)
+        self.anim = QPropertyAnimation(self.fx, b"opacity", self)
+        self.anim.setDuration(220)
+        self.timer = QTimer(self, singleShot=True, timeout=self._fade_out)
+        self._fading = False
+        self.anim.finished.connect(lambda: self.hide() if self._fading else None)
+
+    def show_message(self, text: str, kind: str = "info", ms: int = 3200):
+        self.setProperty("kind", kind)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.setText(text)
+        p = self.parentWidget()
+        w = min(620, p.width() - 80)
+        self.setFixedWidth(w)
+        self.adjustSize()
+        self.move((p.width() - w) // 2, p.height() - self.height() - 86)
+        self.raise_()
+        self.show()
+        self.anim.stop()
+        self.anim.setStartValue(self.fx.opacity() if self.isVisible() else 0.0)
+        self.anim.setEndValue(1.0)
+        self._fading = False
+        self.anim.start()
+        self.timer.start(ms)
+
+    def _fade_out(self):
+        self.anim.stop()
+        self.anim.setStartValue(1.0)
+        self.anim.setEndValue(0.0)
+        self._fading = True
+        self.anim.start()
+
+    def mousePressEvent(self, _):
+        self._fade_out()
 
 
 class StepBar(QWidget):
